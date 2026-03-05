@@ -11,7 +11,7 @@
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
 </p>
 
-**A personal fork of [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent)** with local Qwen3.5-9B inference on Apple Silicon, CLI improvements, Rust-accelerated prompt scanning, and RL research tooling.
+**A personal fork of [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent)** with local Qwen3.5-9B inference on Apple Silicon, browser-based WebGPU inference, CLI improvements, Rust-accelerated prompt scanning, and RL research tooling.
 
 ---
 
@@ -30,11 +30,63 @@ The server auto-starts on port 8800 — no manual setup. Polls up to 60s while t
 **New files**: `local_models/serve.py`
 **Modified**: `hermes_cli/runtime_provider.py`, `agent/model_metadata.py`
 
+### WebGPU Client-Side Inference (Browser)
+
+Run models entirely on the user's GPU via their browser — no server-side inference, no API keys, nothing leaves the machine. Uses [WebLLM](https://github.com/mlc-ai/web-llm) (MLC) to load quantized models through WebGPU.
+
+```bash
+hermes --provider webgpu
+```
+
+This auto-starts a bridge server on port 8801 and opens the browser UI. The user picks a model, WebLLM downloads and loads it on their GPU, then Hermes sends requests through the bridge.
+
+**How it works:**
+
+```
+Hermes CLI ──HTTP──▶ Bridge Server (port 8801) ──WebSocket──▶ Browser (WebGPU/WebLLM)
+                     /v1/chat/completions          ◀── inference results ──┘
+```
+
+The bridge (`web_client/bridge.py`) is a Starlette app that:
+- Serves the web UI at `http://127.0.0.1:8801/`
+- Accepts a WebSocket connection from the browser (the inference engine)
+- Exposes an OpenAI-compatible `/v1/chat/completions` endpoint for Hermes
+- Forwards requests to the browser, streams responses back
+
+**Available models** (all q4f16 quantized for browser VRAM):
+
+| Model | VRAM | Context |
+|-------|------|---------|
+| Qwen3 4B | ~2.5 GB | 8K |
+| Qwen2.5 3B Instruct | ~1.8 GB | 8K |
+| Llama 3.1 8B Instruct | ~4.5 GB | 8K |
+| Mistral 7B v0.3 | ~4 GB | 8K |
+| SmolLM2 1.7B | ~1 GB | 4K |
+
+**Requirements:** Chrome 113+ or Edge 113+ (WebGPU support). Works on any OS — macOS, Windows, Linux.
+
+**Manual start:**
+
+```bash
+python3 -m web_client.bridge                  # start bridge + open browser
+python3 -m web_client.bridge --no-browser     # headless (don't auto-open)
+python3 -m web_client.bridge --port 9000      # custom port
+```
+
+Then in a separate terminal:
+
+```bash
+hermes --provider webgpu
+```
+
+**New files**: `web_client/bridge.py`, `web_client/index.html`
+**Modified**: `hermes_cli/runtime_provider.py`, `hermes_cli/auth.py`, `agent/model_metadata.py`
+
 ### CLI Terminal Improvements
 
 - **Dynamic terminal resize** — horizontal rules and box borders recompute width at render time instead of hardcoded `'─' * 200`
 - **Think block styling** — `<think>...</think>` tags render as dim italic gray with a `~ thinking ~` header, so local chain-of-thought models look clean
-- **Image paste (Ctrl+I)** — detects macOS clipboard images, saves to `~/.hermes/images/`, converts to OpenAI vision format (base64 data URIs) for VLM
+- **Image paste (Ctrl+V / Cmd+V)** — detects clipboard images (macOS via osascript, Linux via xclip), shows `[Image #N]` widget above input, converts to OpenAI vision format (base64 data URIs) for VLM
 - **Color scheme picker** — choose between "cyber" (green/blue) and "synthwave" (pink/purple) on first launch
 
 **Modified**: `cli.py`, `agent/display.py`
@@ -101,6 +153,9 @@ hermes-agent/
 ├── gateway/                # Telegram, Discord, Slack, WhatsApp
 ├── environments/           # RL training environments
 ├── local_models/           # Qwen3.5-9B model server (MLX-VLM)
+├── web_client/             # WebGPU browser inference bridge
+│   ├── bridge.py           #   Starlette bridge (HTTP API ↔ WebSocket ↔ browser)
+│   └── index.html          #   Browser UI (WebLLM model loader + inference engine)
 ├── cron/                   # Job scheduler
 ├── cli.py                  # Interactive REPL (prompt_toolkit TUI)
 ├── run_agent.py            # Main AIAgent orchestrator
@@ -142,6 +197,21 @@ python3 -m local_models.serve qwen
 hermes --provider local --model local/qwen3.5-9b
 ```
 
+### WebGPU Browser Inference (Any OS)
+
+No extra deps needed — just a WebGPU-capable browser (Chrome 113+).
+
+```bash
+hermes --provider webgpu    # auto-starts bridge, opens browser
+```
+
+1. Browser opens → pick a model → click **Load Model** (downloads weights once, cached)
+2. Click **Connect to Hermes** → bridge links browser to CLI
+3. Chat normally — inference runs on your GPU through the browser
+
+Environment variables:
+- `HERMES_WEBGPU_PORT` — override bridge port (default: 8801)
+
 ### Rust Module (Optional)
 
 For 17x faster prompt injection scanning:
@@ -157,16 +227,18 @@ maturin develop --release
 ## Usage
 
 ```bash
-hermes              # Interactive CLI
-hermes model        # Switch provider or model
-hermes setup        # Re-run setup wizard
-hermes gateway      # Start messaging gateway
-hermes status       # Show component status
-hermes doctor       # Diagnose issues
-hermes update       # Update to latest
-hermes skills       # Search/install skills
-hermes cron         # Manage scheduled jobs
-hermes tools        # Configure tool access per platform
+hermes                              # Interactive CLI (default provider)
+hermes --provider local             # Local MLX inference (Apple Silicon)
+hermes --provider webgpu            # Browser WebGPU inference (any OS)
+hermes model                        # Switch provider or model
+hermes setup                        # Re-run setup wizard
+hermes gateway                      # Start messaging gateway
+hermes status                       # Show component status
+hermes doctor                       # Diagnose issues
+hermes update                       # Update to latest
+hermes skills                       # Search/install skills
+hermes cron                         # Manage scheduled jobs
+hermes tools                        # Configure tool access per platform
 ```
 
 ---
