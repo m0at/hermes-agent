@@ -2621,10 +2621,12 @@ class HermesCLI:
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 self.agent.interrupt()
             else:
-                # If there's text in the input buffer, clear it (like bash).
-                # If the buffer is already empty, exit.
-                if event.app.current_buffer.text:
+                # If there's text in the input buffer or images attached, clear them.
+                # If everything is already empty, exit.
+                if event.app.current_buffer.text or self._attached_images:
                     event.app.current_buffer.reset()
+                    self._attached_images.clear()
+                    event.app.invalidate()
                 else:
                     self._should_exit = True
                     event.app.exit()
@@ -2635,51 +2637,100 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
-        def _check_and_attach_clipboard_image(event):
-            """Check if clipboard has image data (macOS), save it, and attach."""
+        def _save_clipboard_image():
+            """Save clipboard image to disk if present. Returns Path or None."""
             import subprocess as _sp
+            import sys as _sys
 
+            if _sys.platform == "darwin":
+                try:
+                    info = _sp.run(
+                        ["osascript", "-e", "the clipboard info"],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    if "«class PNGf»" not in info.stdout and "«class TIFF»" not in info.stdout:
+                        return None
+                except Exception:
+                    return None
+
+                img_dir = Path.home() / ".hermes" / "images"
+                img_dir.mkdir(parents=True, exist_ok=True)
+                self._image_counter += 1
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
+
+                try:
+                    _sp.run(
+                        ["osascript", "-e",
+                         f'set f to POSIX file "{img_path}" as text\n'
+                         f'tell application "System Events" to write (the clipboard as «class PNGf») to (open for access file f with write permission)\n'
+                         f'tell application "System Events" to close access file f'],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if img_path.exists() and img_path.stat().st_size > 0:
+                        return img_path
+                except Exception:
+                    pass
+            else:
+                # Linux/Windows: try xclip for image
+                try:
+                    targets = _sp.run(
+                        ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    if "image/png" not in targets.stdout:
+                        return None
+                except Exception:
+                    return None
+
+                img_dir = Path.home() / ".hermes" / "images"
+                img_dir.mkdir(parents=True, exist_ok=True)
+                self._image_counter += 1
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
+
+                try:
+                    data = _sp.run(
+                        ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
+                        capture_output=True, timeout=5,
+                    )
+                    if data.stdout:
+                        img_path.write_bytes(data.stdout)
+                        return img_path
+                except Exception:
+                    pass
+            return None
+
+        def _get_clipboard_text():
+            """Get text from system clipboard."""
+            import subprocess as _sp
+            import sys as _sys
             try:
-                result = _sp.run(
-                    ["osascript", "-e", "the clipboard info"],
-                    capture_output=True, text=True, timeout=2,
-                )
-                has_image = "«class PNGf»" in result.stdout or "«class TIFF»" in result.stdout
+                if _sys.platform == "darwin":
+                    r = _sp.run(["pbpaste"], capture_output=True, text=True, timeout=2)
+                else:
+                    r = _sp.run(["xclip", "-selection", "clipboard", "-o"],
+                                capture_output=True, text=True, timeout=2)
+                return r.stdout if r.returncode == 0 else ""
             except Exception:
-                has_image = False
+                return ""
 
-            if not has_image:
-                return False
-
-            img_dir = Path.home() / ".hermes" / "images"
-            img_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._image_counter += 1
-            img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
-
-            try:
-                _sp.run(
-                    ["osascript", "-e",
-                     f'set f to POSIX file "{img_path}" as text\n'
-                     f'tell application "System Events" to write (the clipboard as «class PNGf») to (open for access file f with write permission)\n'
-                     f'tell application "System Events" to close access file f'],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if img_path.exists() and img_path.stat().st_size > 0:
-                    self._attached_images.append(img_path)
-                    event.app.invalidate()
-                    return True
-            except Exception:
-                pass
-            return False
-
-        @kb.add('c-i', filter=Condition(
+        @kb.add('c-v', filter=Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
         ))
-        def handle_paste_image(event):
-            """Ctrl+I (Tab) — paste image from clipboard if available, else Tab."""
-            if not _check_and_attach_clipboard_image(event):
-                event.current_buffer.insert_text('\t')
+        def handle_paste(event):
+            """Ctrl+V — paste from clipboard: text and/or image."""
+            # Check for image in clipboard
+            img_path = _save_clipboard_image()
+            if img_path:
+                self._attached_images.append(img_path)
+
+            # Also paste any text content
+            text = _get_clipboard_text()
+            if text:
+                event.current_buffer.insert_text(text)
+
+            event.app.invalidate()
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -2737,50 +2788,21 @@ class HermesCLI:
         _paste_counter = [0]
         _prev_text_len = [0]
 
-        def _try_attach_clipboard_image_bg():
-            """Check clipboard for image data and attach (best-effort, for paste events)."""
-            import subprocess as _sp
-            try:
-                result = _sp.run(
-                    ["osascript", "-e", "the clipboard info"],
-                    capture_output=True, text=True, timeout=2,
-                )
-                has_image = "\u00ABclass PNGf\u00BB" in result.stdout or "\u00ABclass TIFF\u00BB" in result.stdout
-            except Exception:
-                has_image = False
-            if not has_image:
-                return
-            img_dir = Path.home() / ".hermes" / "images"
-            img_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._image_counter += 1
-            img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
-            try:
-                _sp.run(
-                    ["osascript", "-e",
-                     f'set f to POSIX file "{img_path}" as text\n'
-                     f'tell application "System Events" to write (the clipboard as \u00ABclass PNGf\u00BB) to (open for access file f with write permission)\n'
-                     f'tell application "System Events" to close access file f'],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if img_path.exists() and img_path.stat().st_size > 0:
-                    self._attached_images.append(img_path)
-                    if self._app:
-                        self._app.invalidate()
-            except Exception:
-                pass
-
         def _on_text_changed(buf):
-            """Detect large pastes and collapse them to a file reference."""
+            """Detect large pastes and collapse them to a file reference.
+            Also auto-detect clipboard images on Cmd+V (bracketed paste)."""
             text = buf.text
             line_count = text.count('\n')
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
-            # Heuristic: a real paste adds many characters at once (not just a
-            # single newline from Alt+Enter) AND the result has 5+ lines.
+            # Heuristic: a real paste adds many characters at once
             if chars_added > 1 and not text.startswith('/'):
-                # Also check if clipboard has an image (e.g. screenshot copy+paste)
-                _try_attach_clipboard_image_bg()
+                # Check if clipboard also has an image (Cmd+V / middle-click paste)
+                img_path = _save_clipboard_image()
+                if img_path:
+                    self._attached_images.append(img_path)
+                    if self._app:
+                        self._app.invalidate()
                 if line_count >= 5:
                     _paste_counter[0] += 1
                     paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
@@ -3227,8 +3249,9 @@ class HermesCLI:
                     if _img_parts:
                         content_parts = []
                         text_part = user_input if isinstance(user_input, str) else ""
-                        if text_part:
-                            content_parts.append({"type": "text", "text": text_part})
+                        if not text_part:
+                            text_part = "What do you see in this image?"
+                        content_parts.append({"type": "text", "text": text_part})
                         content_parts.extend(_img_parts)
                         user_input = content_parts
 
