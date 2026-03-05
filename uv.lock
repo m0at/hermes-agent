@@ -1071,7 +1071,6 @@ dependencies = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "litellm" },
-    { name = "mlx-lm" },
     { name = "mlx-vlm" },
     { name = "openai" },
     { name = "platformdirs" },
@@ -1096,7 +1095,7 @@ all = [
     { name = "elevenlabs" },
     { name = "honcho-ai" },
     { name = "mcp" },
-    { name = "mlx-lm" },
+    { name = "mlx-vlm" },
     { name = "ptyprocess" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1123,7 +1122,7 @@ honcho = [
     { name = "honcho-ai" },
 ]
 local = [
-    { name = "mlx-lm" },
+    { name = "mlx-vlm" },
 ]
 mcp = [
     { name = "mcp" },
@@ -1177,9 +1176,8 @@ requires-dist = [
     { name = "jinja2" },
     { name = "litellm", specifier = ">=1.75.5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0" },
-    { name = "mlx-lm", specifier = ">=0.30.7" },
-    { name = "mlx-lm", marker = "extra == 'local'", specifier = ">=0.22.0" },
     { name = "mlx-vlm", specifier = ">=0.3.12" },
+    { name = "mlx-vlm", marker = "extra == 'local'", specifier = ">=0.3.12" },
     { name = "openai" },
     { name = "platformdirs" },
     { name = "prompt-toolkit" },
