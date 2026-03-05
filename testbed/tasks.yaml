@@ -1,0 +1,102 @@
+# Eval tasks for testbed/eval_runner.py
+# Each task has a query, required toolsets, and a check function.
+
+- id: simple_chat
+  query: "What is the capital of Japan?"
+  toolsets: [file]
+  max_iterations: 5
+  check: contains
+  expected: "Tokyo"
+
+- id: arithmetic
+  query: "What is 137 * 29? Give just the number."
+  toolsets: [file]
+  max_iterations: 5
+  check: contains
+  expected: "3973"
+
+- id: file_write_read
+  query: "Write the text 'hermes was here' to /tmp/hermes_testbed_check.txt, then read it back and tell me what it says."
+  toolsets: [file]
+  max_iterations: 10
+  check: contains
+  expected: "hermes was here"
+
+- id: file_search
+  query: "Search for files matching '*.py' in the testbed/ directory of this project and list them."
+  toolsets: [file]
+  max_iterations: 10
+  check: contains
+  expected: "repl.py"
+
+- id: multi_step_file
+  query: "Create a file /tmp/hermes_testbed_nums.txt with the numbers 1 through 5, one per line. Then read it and tell me the sum."
+  toolsets: [file]
+  max_iterations: 10
+  check: contains
+  expected: "15"
+
+- id: terminal_basic
+  query: "Run 'echo hello_from_hermes' in the terminal and tell me the output."
+  toolsets: [terminal]
+  max_iterations: 10
+  check: contains
+  expected: "hello_from_hermes"
+
+- id: terminal_python
+  query: "Run python3 -c 'print(sum(range(1,101)))' and tell me the result."
+  toolsets: [terminal]
+  max_iterations: 10
+  check: contains
+  expected: "5050"
+
+- id: web_search
+  query: "Search the web for 'Nous Research Hermes' and give me a one-sentence summary."
+  toolsets: [web]
+  max_iterations: 10
+  check: responds
+  expected: ""
+
+- id: reasoning
+  query: "A farmer has 17 sheep. All but 9 run away. How many sheep does the farmer have left? Think step by step."
+  toolsets: [file]
+  max_iterations: 5
+  check: contains
+  expected: "9"
+
+# --- Local Mistral 7B tasks (no tool calling, simpler tasks) ---
+
+- id: local_greeting
+  query: "Hello! Who are you?"
+  toolsets: [file]
+  max_iterations: 3
+  check: responds
+  expected: ""
+
+- id: local_code
+  query: "Write a Python function that checks if a number is prime. Just the code, no explanation."
+  toolsets: [file]
+  max_iterations: 3
+  check: contains
+  expected: "def"
+
+- id: local_translation
+  query: "Translate 'Hello, how are you?' to French."
+  toolsets: [file]
+  max_iterations: 3
+  check: contains
+  expected: "Bonjour"
+
+- id: local_json
+  query: "Output a JSON object with keys 'name', 'age', 'city' for a fictional person. Only output the JSON."
+  toolsets: [file]
+  max_iterations: 3
+  check: contains
+  expected: "name"
+
+- id: local_logic
+  query: "If all roses are flowers and some flowers fade quickly, can we conclude that some roses fade quickly? Answer yes or no and explain briefly."
+  toolsets: [file]
+  max_iterations: 3
+  check: responds
+  expected: ""

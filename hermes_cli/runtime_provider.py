@@ -90,6 +90,114 @@ def _resolve_openrouter_runtime(
     }
 
 
+LOCAL_MODEL_PORTS = {
+    "local/qwen3.5-9b": 8800,
+}
+
+
+def _local_server_alive(port: int, timeout: float = 1.0) -> bool:
+    """Check if a local model server is responding on the given port."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except (ConnectionRefusedError, OSError, TimeoutError):
+        return False
+
+
+# Map model IDs to serve.py aliases
+_LOCAL_MODEL_ALIASES = {
+    "local/qwen3.5-9b": "qwen",
+}
+
+
+def _auto_start_local_server(model_id: str, port: int) -> bool:
+    """Spawn the local model server in the background if not already running.
+
+    Returns True if the server is alive (already running or successfully started).
+    """
+    if _local_server_alive(port):
+        return True
+
+    alias = _LOCAL_MODEL_ALIASES.get(model_id)
+    if not alias:
+        return False
+
+    import subprocess
+    import sys
+    import time
+
+    cmd = [sys.executable, "-m", "local_models.serve", alias]
+    print(f"Local model server not running on port {port}. Starting it...")
+    print(f"  $ {' '.join(cmd)}")
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,  # detach from terminal
+        )
+    except Exception as e:
+        print(f"  Failed to start server: {e}")
+        return False
+
+    # Wait up to 60s for the server to come alive (model loading takes time)
+    print(f"  Waiting for server on port {port}...", end="", flush=True)
+    for i in range(120):
+        # Check if process died
+        ret = proc.poll()
+        if ret is not None:
+            stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+            print(f"\n  Server exited with code {ret}")
+            if stderr:
+                # Show last few lines of error
+                lines = stderr.strip().splitlines()
+                for line in lines[-5:]:
+                    print(f"    {line}")
+            return False
+        if _local_server_alive(port):
+            print(f" ready! (took ~{i // 2}s)")
+            return True
+        if i % 10 == 0 and i > 0:
+            print(".", end="", flush=True)
+        time.sleep(0.5)
+
+    print(f"\n  Timed out waiting for server on port {port}")
+    return False
+
+
+def _resolve_local_runtime(*, requested_provider: str = "local") -> Dict[str, Any]:
+    """Resolve local model provider — reads model from config to pick the right port.
+
+    If the server isn't running, auto-starts it in the background.
+    """
+    model_cfg = _get_model_config()
+    model_id = model_cfg.get("default", "local/qwen3.5-9b")
+    if isinstance(model_id, str) and model_id.startswith("local/"):
+        port = LOCAL_MODEL_PORTS.get(model_id, 8800)
+    else:
+        port = 8800
+
+    base_url = model_cfg.get("base_url", "").strip()
+    if not base_url:
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    if not base_url:
+        base_url = f"http://127.0.0.1:{port}/v1"
+
+    # Auto-start the server if it's not running
+    _auto_start_local_server(model_id, port)
+
+    return {
+        "provider": "local",
+        "api_mode": "chat_completions",
+        "base_url": base_url.rstrip("/"),
+        "api_key": "local",
+        "source": "local",
+        "requested_provider": requested_provider,
+    }
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -131,6 +239,9 @@ def resolve_runtime_provider(
             "last_refresh": creds.get("last_refresh"),
             "requested_provider": requested_provider,
         }
+
+    if provider == "local" or requested_provider == "local":
+        return _resolve_local_runtime(requested_provider=requested_provider)
 
     runtime = _resolve_openrouter_runtime(
         requested_provider=requested_provider,

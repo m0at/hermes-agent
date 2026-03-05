@@ -404,6 +404,7 @@ def cmd_model(args):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "local": "Local models",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -418,11 +419,12 @@ def cmd_model(args):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
+        ("local", "Local models (Qwen3.5-9B GPU via MLX-VLM)"),
         ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
 
     # Reorder so the active provider is at the top
-    active_key = active if active in ("openrouter", "nous", "openai-codex") else "custom"
+    active_key = active if active in ("openrouter", "nous", "openai-codex", "local") else "custom"
     ordered = []
     for key, label in providers:
         if key == active_key:
@@ -445,6 +447,8 @@ def cmd_model(args):
         _model_flow_nous(config, current_model)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "local":
+        _model_flow_local(config)
     elif selected_provider == "custom":
         _model_flow_custom(config)
 
@@ -657,6 +661,48 @@ def _model_flow_openai_codex(config, current_model=""):
         print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
+
+
+def _model_flow_local(config):
+    """Local model provider: Qwen3.5-9B on Apple Silicon GPU via MLX-VLM."""
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import save_env_value, load_config, save_config
+
+    model_id = "local/qwen3.5-9b"
+    port = 8800
+    base_url = f"http://127.0.0.1:{port}/v1"
+
+    print("Local model: Qwen3.5-9B 4-bit (MLX-VLM on Apple Silicon GPU)")
+    print()
+    print("  The server auto-starts when you connect, or start it manually:")
+    print("    python3 -m local_models.serve qwen")
+    print()
+
+    try:
+        confirm = input("Set Qwen3.5-9B as active model? [Y/n]: ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if confirm and confirm not in ("y", "yes", ""):
+        print("No change.")
+        return
+
+    _save_model_choice(model_id)
+
+    save_env_value("OPENAI_BASE_URL", base_url)
+    save_env_value("OPENAI_API_KEY", "local")
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if isinstance(model, dict):
+        model["provider"] = "local"
+        model["base_url"] = base_url
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Model set to: {model_id}")
+    print(f"Endpoint: {base_url}")
 
 
 def _model_flow_custom(config):
@@ -1085,6 +1131,17 @@ For more help on a command:
         help="Show version and exit"
     )
     parser.add_argument(
+        "-m", "--model",
+        default=None,
+        help="Model to use (shortcut for: hermes chat --model MODEL)"
+    )
+    parser.add_argument(
+        "--provider",
+        choices=["auto", "openrouter", "nous", "openai-codex", "local"],
+        default=None,
+        help="Inference provider (shortcut for: hermes chat --provider PROVIDER)"
+    )
+    parser.add_argument(
         "--resume", "-r",
         metavar="SESSION_ID",
         default=None,
@@ -1122,7 +1179,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "local"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -1652,26 +1709,29 @@ For more help on a command:
         cmd_version(args)
         return
     
-    # Handle top-level --resume / --continue as shortcut to chat
-    if (args.resume or args.continue_last) and args.command is None:
+    # Handle top-level --resume / --continue / --provider / --model as shortcut to chat
+    if (args.resume or args.continue_last or args.provider or args.model) and args.command is None:
         args.command = "chat"
-        args.query = None
-        args.model = None
-        args.provider = None
-        args.toolsets = None
-        args.verbose = False
+        if not hasattr(args, "query"):
+            args.query = None
+        if not hasattr(args, "toolsets"):
+            args.toolsets = None
+        if not hasattr(args, "verbose"):
+            args.verbose = False
         cmd_chat(args)
         return
     
     # Default to chat if no command specified
     if args.command is None:
         args.query = None
-        args.model = None
-        args.provider = None
-        args.toolsets = None
-        args.verbose = False
-        args.resume = None
-        args.continue_last = False
+        if not hasattr(args, "toolsets"):
+            args.toolsets = None
+        if not hasattr(args, "verbose"):
+            args.verbose = False
+        if not hasattr(args, "resume"):
+            args.resume = None
+        if not hasattr(args, "continue_last"):
+            args.continue_last = False
         cmd_chat(args)
         return
     

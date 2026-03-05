@@ -407,7 +407,30 @@ def _run_cleanup():
 _GOLD = "\033[1;33m"    # Bold yellow — closest universal match to the gold theme
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
+_ITALIC = "\033[3m"
+_THINK = "\033[2;3;37m"  # dim + italic + gray — wispy thought text
 _RST = "\033[0m"
+
+
+def _format_think_blocks(text: str) -> str:
+    """Render <think>...</think> blocks as dim italic gray text.
+
+    Replaces raw think tags with styled ANSI output so the model's
+    internal reasoning appears as wispy, faded thoughts.
+    """
+    import re
+
+    def _style_think(m):
+        thought = m.group(1).strip()
+        if not thought:
+            return ""
+        # Wrap each line so long thoughts stay dim
+        lines = thought.splitlines()
+        styled = "\n".join(f"  {_THINK}{line}{_RST}" for line in lines)
+        return f"{_THINK}  ~ thinking ~{_RST}\n{styled}\n"
+
+    return re.sub(r'<think>(.*?)</think>', _style_think, text, flags=re.DOTALL)
+
 
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
@@ -830,6 +853,8 @@ class HermesCLI:
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
+        # Whether to show <think> blocks in model responses
+        self.show_thinking = CLI_CONFIG["display"].get("show_thinking", True)
         
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
@@ -1066,8 +1091,13 @@ class HermesCLI:
     
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
+        # First launch: let user pick color scheme with a single keypress
+        from hermes_cli.color_scheme import needs_scheme_pick, pick_color_scheme
+        if needs_scheme_pick():
+            pick_color_scheme()
+
         self.console.clear()
-        
+
         if self.compact:
             self.console.print(COMPACT_BANNER)
             self._show_status()
@@ -1767,6 +1797,12 @@ class HermesCLI:
             self._show_gateway_status()
         elif cmd_lower == "/verbose":
             self._toggle_verbose()
+        elif cmd_lower == "/thinkoff":
+            self.show_thinking = False
+            print("Thinking blocks hidden. Use /thinkon to show them again.")
+        elif cmd_lower == "/thinkon":
+            self.show_thinking = True
+            print("Thinking blocks visible.")
         elif cmd_lower == "/compress":
             self._manual_compress()
         elif cmd_lower == "/usage":
@@ -2144,7 +2180,8 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        w = self.console.width
+        import shutil as _shutil
+        w = _shutil.get_terminal_size((80, 24)).columns
         _cprint(f"{_GOLD}{'─' * w}{_RST}")
         print(flush=True)
         
@@ -2220,15 +2257,23 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                w = self.console.width
+                import shutil as _shutil
+                w = _shutil.get_terminal_size((80, 24)).columns
                 label = " ⚕ Hermes "
                 fill = w - 2 - len(label)  # 2 for ╭ and ╮
                 top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
                 bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
 
+                # Style or strip <think> blocks based on user preference
+                if self.show_thinking:
+                    styled_response = _format_think_blocks(response)
+                else:
+                    import re as _re
+                    styled_response = _re.sub(r'<think>.*?</think>\s*', '', response, flags=_re.DOTALL).strip()
+
                 # Render box + response as a single _cprint call so
                 # nothing can interleave between the box borders.
-                _cprint(f"\n{top}\n{response}\n\n{bot}")
+                _cprint(f"\n{top}\n{styled_response}\n\n{bot}")
             
             # Combine all interrupt messages (user may have typed multiple while waiting)
             # and re-queue as one prompt for process_loop
@@ -2504,7 +2549,57 @@ class HermesCLI:
             """Handle Ctrl+D - exit."""
             self._should_exit = True
             event.app.exit()
-        
+
+        @kb.add('c-i', filter=Condition(
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
+        ))
+        def handle_paste_image(event):
+            """Ctrl+I — paste image from clipboard (macOS).
+
+            Checks if the system clipboard contains image data, saves it to
+            ~/.hermes/images/, and inserts a reference tag into the input buffer.
+            """
+            import subprocess as _sp
+            import tempfile
+
+            # Check if clipboard has image data (macOS only)
+            try:
+                result = _sp.run(
+                    ["osascript", "-e", "the clipboard info"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                has_image = "«class PNGf»" in result.stdout or "«class TIFF»" in result.stdout
+            except Exception:
+                has_image = False
+
+            if not has_image:
+                # No image in clipboard — let Tab through (c-i is also Tab)
+                event.current_buffer.insert_text('\t')
+                return
+
+            # Save clipboard image to disk
+            img_dir = Path.home() / ".hermes" / "images"
+            img_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            img_path = img_dir / f"clip_{ts}.png"
+
+            try:
+                _sp.run(
+                    ["osascript", "-e",
+                     f'set f to POSIX file "{img_path}" as text\n'
+                     f'tell application "System Events" to write (the clipboard as «class PNGf») to (open for access file f with write permission)\n'
+                     f'tell application "System Events" to close access file f'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if img_path.exists() and img_path.stat().st_size > 0:
+                    ref = f"[image: {img_path}]"
+                    event.current_buffer.insert_text(ref)
+                    event.app.invalidate()
+                else:
+                    event.current_buffer.insert_text('[clipboard image save failed]')
+            except Exception as e:
+                event.current_buffer.insert_text(f'[image error: {e}]')
+
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
@@ -2540,7 +2635,8 @@ class HermesCLI:
         def _input_height():
             try:
                 doc = input_area.buffer.document
-                available_width = (cli_ref.console.width or 80) - 4  # subtract prompt width
+                import shutil as _shutil
+                available_width = (_shutil.get_terminal_size((80, 24)).columns or 80) - 4  # subtract prompt width
                 if available_width < 10:
                     available_width = 40
                 visual_lines = 0
@@ -2680,7 +2776,10 @@ class HermesCLI:
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Hermes needs your input'))
-            lines.append(('class:clarify-border', ' ─────────────────────────────╮\n'))
+            import shutil as _sh
+            _cw = _sh.get_terminal_size((80, 24)).columns
+            _fill = max(_cw - 3 - len('Hermes needs your input') - 2, 1)
+            lines.append(('class:clarify-border', ' ' + '─' * _fill + '╮\n'))
             lines.append(('class:clarify-border', '│\n'))
 
             # Question text
@@ -2711,7 +2810,7 @@ class HermesCLI:
                 lines.append(('', '\n'))
 
             lines.append(('class:clarify-border', '│\n'))
-            lines.append(('class:clarify-border', '╰──────────────────────────────────────────────────╯\n'))
+            lines.append(('class:clarify-border', '╰' + '─' * max(_cw - 2, 1) + '╯\n'))
             return lines
 
         clarify_widget = ConditionalContainer(
@@ -2731,13 +2830,16 @@ class HermesCLI:
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
             lines.append(('class:sudo-title', '🔐 Sudo Password Required'))
-            lines.append(('class:sudo-border', ' ──────────────────────────╮\n'))
+            import shutil as _sh
+            _sw = _sh.get_terminal_size((80, 24)).columns
+            _sfill = max(_sw - 3 - len('🔐 Sudo Password Required') - 2, 1)
+            lines.append(('class:sudo-border', ' ' + '─' * _sfill + '╮\n'))
             lines.append(('class:sudo-border', '│\n'))
             lines.append(('class:sudo-border', '│  '))
             lines.append(('class:sudo-text', 'Enter password below (hidden), or press Enter to skip'))
             lines.append(('', '\n'))
             lines.append(('class:sudo-border', '│\n'))
-            lines.append(('class:sudo-border', '╰──────────────────────────────────────────────────╯\n'))
+            lines.append(('class:sudo-border', '╰' + '─' * max(_sw - 2, 1) + '╯\n'))
             return lines
 
         sudo_widget = ConditionalContainer(
@@ -2770,7 +2872,10 @@ class HermesCLI:
             lines = []
             lines.append(('class:approval-border', '╭─ '))
             lines.append(('class:approval-title', '⚠️  Dangerous Command'))
-            lines.append(('class:approval-border', ' ───────────────────────────────╮\n'))
+            import shutil as _sh
+            _aw = _sh.get_terminal_size((80, 24)).columns
+            _afill = max(_aw - 3 - len('⚠️  Dangerous Command') - 2, 1)
+            lines.append(('class:approval-border', ' ' + '─' * _afill + '╮\n'))
             lines.append(('class:approval-border', '│\n'))
             lines.append(('class:approval-border', '│  '))
             lines.append(('class:approval-desc', description))
@@ -2788,7 +2893,7 @@ class HermesCLI:
                     lines.append(('class:approval-choice', f'  {label}'))
                 lines.append(('', '\n'))
             lines.append(('class:approval-border', '│\n'))
-            lines.append(('class:approval-border', '╰──────────────────────────────────────────────────────╯\n'))
+            lines.append(('class:approval-border', '╰' + '─' * max(_aw - 2, 1) + '╯\n'))
             return lines
 
         approval_widget = ConditionalContainer(
@@ -2800,13 +2905,22 @@ class HermesCLI:
         )
 
         # Horizontal rules above and below the input (bronze, 1 line each).
-        # The bottom rule moves down as the TextArea grows with newlines.
+        # Use a callable so the rule redraws at the current terminal width
+        # after a resize (avoids the old 200-char overflow/garble).
+        def _rule_text():
+            try:
+                import shutil
+                w = shutil.get_terminal_size((80, 24)).columns
+            except Exception:
+                w = 80
+            return [('class:input-rule', '─' * w)]
+
         input_rule_top = Window(
-            content=FormattedTextControl([('class:input-rule', '─' * 200)]),
+            content=FormattedTextControl(_rule_text),
             height=1,
         )
         input_rule_bot = Window(
-            content=FormattedTextControl([('class:input-rule', '─' * 200)]),
+            content=FormattedTextControl(_rule_text),
             height=1,
         )
 
@@ -2920,10 +3034,43 @@ class HermesCLI:
                             print()
                             _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
                     
+                    # Extract image references [image: /path/to/file.png] from input
+                    # and convert to multimodal content for VLM models
+                    import re as _re2
+                    _img_refs = _re2.findall(r'\[image:\s*(.+?)\]', user_input)
+                    if _img_refs:
+                        import base64 as _b64
+                        # Strip image tags from text portion
+                        text_part = _re2.sub(r'\[image:\s*.+?\]', '', user_input).strip()
+                        _img_parts = []
+                        for img_p in _img_refs:
+                            img_p = img_p.strip()
+                            ip = Path(img_p)
+                            if ip.exists():
+                                data = _b64.b64encode(ip.read_bytes()).decode()
+                                ext = ip.suffix.lower().lstrip('.')
+                                mime = {'png': 'image/png', 'jpg': 'image/jpeg',
+                                        'jpeg': 'image/jpeg', 'gif': 'image/gif',
+                                        'webp': 'image/webp'}.get(ext, 'image/png')
+                                _img_parts.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{mime};base64,{data}"}
+                                })
+                                _cprint(f"  {_DIM}📎 attached {ip.name} ({ip.stat().st_size // 1024}KB){_RST}")
+                            else:
+                                _cprint(f"  {_DIM}⚠ image not found: {img_p}{_RST}")
+                        if _img_parts:
+                            # Build multimodal content list for OpenAI vision format
+                            content_parts = []
+                            if text_part:
+                                content_parts.append({"type": "text", "text": text_part})
+                            content_parts.extend(_img_parts)
+                            user_input = content_parts  # chat() will handle list content
+
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
-                    
+
                     try:
                         self.chat(user_input)
                     finally:

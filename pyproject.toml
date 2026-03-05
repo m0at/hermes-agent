@@ -35,6 +35,9 @@ dependencies = [
   "platformdirs",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]",
+  "mlx-vlm>=0.3.12",
+  "torch>=2.10.0",
+  "torchvision>=0.25.0",
 ]
 
 [project.optional-dependencies]
@@ -49,6 +52,7 @@ pty = ["ptyprocess>=0.7.0"]
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
+local = ["mlx-vlm>=0.3.12"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[messaging]",
@@ -61,17 +65,19 @@ all = [
   "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
+  "hermes-agent[local]",
 ]
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
+hermes-serve = "local_models.serve:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants"]
 
 [tool.setuptools.packages.find]
-include = ["tools", "hermes_cli", "gateway", "cron", "honcho_integration"]
+include = ["tools", "hermes_cli", "gateway", "cron", "honcho_integration", "local_models"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
