@@ -700,6 +700,7 @@ COMMANDS = {
     "/tools": "List available tools",
     "/toolsets": "List available toolsets",
     "/model": "Show or change the current model",
+    "/provider": "Switch provider (openrouter, local, custom) with API key",
     "/prompt": "View/set custom system prompt",
     "/personality": "Set a predefined personality",
     "/clear": "Clear screen and reset conversation (fresh start)",
@@ -1317,12 +1318,83 @@ class HermesCLI:
         print(f"  Config File: {config_path} {config_status}")
         print()
     
+    def _handle_provider_command(self, cmd: str):
+        """Switch provider, model, and API key mid-session."""
+        parts = cmd.split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if not arg:
+            print()
+            print(f"  Current provider config:")
+            print(f"    Model:    {self.model}")
+            print(f"    Base URL: {self.base_url}")
+            api = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set'
+            print(f"    API Key:  {api}")
+            print()
+            print("  Usage:")
+            print("    /provider openrouter    Switch to OpenRouter (prompts for API key)")
+            print("    /provider local         Switch to local Qwen3.5-9B")
+            print("    /provider custom        Set custom endpoint + key")
+            print()
+            return
+
+        try:
+            if arg == "openrouter":
+                key = input("  OpenRouter API key: ").strip()
+                if not key:
+                    print("  Cancelled.")
+                    return
+                model = input(f"  Model [{self.model}]: ").strip() or self.model
+                self.api_key = key
+                self.base_url = "https://openrouter.ai/api/v1"
+                self.model = model
+                self.agent = None
+                save_config_value("model.default", model)
+                from hermes_cli.config import save_env_value
+                save_env_value("OPENROUTER_API_KEY", key)
+                save_env_value("OPENAI_BASE_URL", self.base_url)
+                print(f"  Switched to OpenRouter: {model}")
+
+            elif arg == "local":
+                self.api_key = "local"
+                self.base_url = "http://127.0.0.1:8800/v1"
+                self.model = "local/qwen3.5-9b"
+                self.agent = None
+                save_config_value("model.default", self.model)
+                from hermes_cli.config import save_env_value
+                save_env_value("OPENAI_BASE_URL", self.base_url)
+                save_env_value("OPENAI_API_KEY", "local")
+                print(f"  Switched to local Qwen3.5-9B (port 8800)")
+
+            elif arg == "custom":
+                url = input("  Base URL: ").strip()
+                if not url:
+                    print("  Cancelled.")
+                    return
+                key = input("  API key (optional): ").strip() or "none"
+                model = input(f"  Model name [{self.model}]: ").strip() or self.model
+                self.api_key = key
+                self.base_url = url.rstrip("/")
+                self.model = model
+                self.agent = None
+                save_config_value("model.default", model)
+                from hermes_cli.config import save_env_value
+                save_env_value("OPENAI_BASE_URL", self.base_url)
+                save_env_value("OPENAI_API_KEY", key)
+                print(f"  Switched to {model} at {self.base_url}")
+
+            else:
+                print(f"  Unknown provider: {arg}")
+                print("  Options: openrouter, local, custom")
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Cancelled.")
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
             print("(._.) No conversation history yet.")
             return
-        
+
         print()
         print("+" + "-" * 50 + "+")
         print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
@@ -1774,6 +1846,8 @@ class HermesCLI:
             else:
                 print(f"Current model: {self.model}")
                 print("  Usage: /model <model-name> to change")
+        elif cmd_lower.startswith("/provider"):
+            self._handle_provider_command(cmd_original)
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)
@@ -2350,6 +2424,10 @@ class HermesCLI:
         self._approval_state = None     # dict with command, description, choices, selected, response_queue
         self._approval_deadline = 0
 
+        # Clipboard image attachments (like Claude Code's [Image #N])
+        self._attached_images = []      # list of Path objects for attached images
+        self._image_counter = 0         # global counter for image numbering
+
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
@@ -2419,11 +2497,18 @@ class HermesCLI:
 
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
-            if text:
-                if self._agent_running and not text.startswith("/"):
-                    self._interrupt_queue.put(text)
+            has_images = len(self._attached_images) > 0
+            if text or has_images:
+                # Snapshot and clear attached images
+                images = list(self._attached_images)
+                self._attached_images.clear()
+                event.app.invalidate()
+                # Bundle text + images as a tuple when images are present
+                payload = (text, images) if images else text
+                if self._agent_running and not (text and text.startswith("/")):
+                    self._interrupt_queue.put(payload if isinstance(payload, str) else text)
                 else:
-                    self._pending_input.put(text)
+                    self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
         
         @kb.add('escape', 'enter')
@@ -2550,19 +2635,10 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
-        @kb.add('c-i', filter=Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
-        ))
-        def handle_paste_image(event):
-            """Ctrl+I — paste image from clipboard (macOS).
-
-            Checks if the system clipboard contains image data, saves it to
-            ~/.hermes/images/, and inserts a reference tag into the input buffer.
-            """
+        def _check_and_attach_clipboard_image(event):
+            """Check if clipboard has image data (macOS), save it, and attach."""
             import subprocess as _sp
-            import tempfile
 
-            # Check if clipboard has image data (macOS only)
             try:
                 result = _sp.run(
                     ["osascript", "-e", "the clipboard info"],
@@ -2573,15 +2649,13 @@ class HermesCLI:
                 has_image = False
 
             if not has_image:
-                # No image in clipboard — let Tab through (c-i is also Tab)
-                event.current_buffer.insert_text('\t')
-                return
+                return False
 
-            # Save clipboard image to disk
             img_dir = Path.home() / ".hermes" / "images"
             img_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            img_path = img_dir / f"clip_{ts}.png"
+            self._image_counter += 1
+            img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
 
             try:
                 _sp.run(
@@ -2592,13 +2666,20 @@ class HermesCLI:
                     capture_output=True, text=True, timeout=5,
                 )
                 if img_path.exists() and img_path.stat().st_size > 0:
-                    ref = f"[image: {img_path}]"
-                    event.current_buffer.insert_text(ref)
+                    self._attached_images.append(img_path)
                     event.app.invalidate()
-                else:
-                    event.current_buffer.insert_text('[clipboard image save failed]')
-            except Exception as e:
-                event.current_buffer.insert_text(f'[image error: {e}]')
+                    return True
+            except Exception:
+                pass
+            return False
+
+        @kb.add('c-i', filter=Condition(
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
+        ))
+        def handle_paste_image(event):
+            """Ctrl+I (Tab) — paste image from clipboard if available, else Tab."""
+            if not _check_and_attach_clipboard_image(event):
+                event.current_buffer.insert_text('\t')
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -2656,6 +2737,39 @@ class HermesCLI:
         _paste_counter = [0]
         _prev_text_len = [0]
 
+        def _try_attach_clipboard_image_bg():
+            """Check clipboard for image data and attach (best-effort, for paste events)."""
+            import subprocess as _sp
+            try:
+                result = _sp.run(
+                    ["osascript", "-e", "the clipboard info"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                has_image = "\u00ABclass PNGf\u00BB" in result.stdout or "\u00ABclass TIFF\u00BB" in result.stdout
+            except Exception:
+                has_image = False
+            if not has_image:
+                return
+            img_dir = Path.home() / ".hermes" / "images"
+            img_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._image_counter += 1
+            img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
+            try:
+                _sp.run(
+                    ["osascript", "-e",
+                     f'set f to POSIX file "{img_path}" as text\n'
+                     f'tell application "System Events" to write (the clipboard as \u00ABclass PNGf\u00BB) to (open for access file f with write permission)\n'
+                     f'tell application "System Events" to close access file f'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if img_path.exists() and img_path.stat().st_size > 0:
+                    self._attached_images.append(img_path)
+                    if self._app:
+                        self._app.invalidate()
+            except Exception:
+                pass
+
         def _on_text_changed(buf):
             """Detect large pastes and collapse them to a file reference."""
             text = buf.text
@@ -2664,16 +2778,17 @@ class HermesCLI:
             _prev_text_len[0] = len(text)
             # Heuristic: a real paste adds many characters at once (not just a
             # single newline from Alt+Enter) AND the result has 5+ lines.
-            if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
-                _paste_counter[0] += 1
-                # Save to temp file
-                paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
-                paste_dir.mkdir(parents=True, exist_ok=True)
-                paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
-                paste_file.write_text(text, encoding="utf-8")
-                # Replace buffer with compact reference
-                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines → {paste_file}]"
-                buf.cursor_position = len(buf.text)
+            if chars_added > 1 and not text.startswith('/'):
+                # Also check if clipboard has an image (e.g. screenshot copy+paste)
+                _try_attach_clipboard_image_bg()
+                if line_count >= 5:
+                    _paste_counter[0] += 1
+                    paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
+                    paste_dir.mkdir(parents=True, exist_ok=True)
+                    paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
+                    paste_file.write_text(text, encoding="utf-8")
+                    buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
+                    buf.cursor_position = len(buf.text)
 
         input_area.buffer.on_text_changed += _on_text_changed
 
@@ -2904,6 +3019,30 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._approval_state is not None),
         )
 
+        # --- Attached images display (like Claude Code's [Image #N]) ---
+        def _get_images_display():
+            if not cli_ref._attached_images:
+                return []
+            fragments = []
+            base_num = cli_ref._image_counter - len(cli_ref._attached_images) + 1
+            for i, img_path in enumerate(cli_ref._attached_images):
+                num = base_num + i
+                size_kb = img_path.stat().st_size // 1024 if img_path.exists() else 0
+                if i > 0:
+                    fragments.append(('', ' '))
+                fragments.append(('class:image-tag', f' [Image #{num}] '))
+                fragments.append(('class:image-hint', f' {size_kb}KB'))
+            fragments.append(('class:image-hint', '  (\u2191 to select)'))
+            return fragments
+
+        images_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_images_display),
+                height=1,
+            ),
+            filter=Condition(lambda: len(cli_ref._attached_images) > 0),
+        )
+
         # Horizontal rules above and below the input (bronze, 1 line each).
         # Use a callable so the rule redraws at the current terminal width
         # after a resize (avoids the old 200-char overflow/garble).
@@ -2934,6 +3073,7 @@ class HermesCLI:
                 approval_widget,
                 clarify_widget,
                 spacer,
+                images_widget,
                 input_rule_top,
                 input_area,
                 input_rule_bot,
@@ -2975,6 +3115,9 @@ class HermesCLI:
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
+            # Attached images
+            'image-tag': 'bg:#333355 #FFD700 bold underline',
+            'image-hint': '#555555 italic',
         })
         
         # Create the application
@@ -2997,75 +3140,97 @@ class HermesCLI:
                     except queue.Empty:
                         continue
                     
-                    if not user_input:
+                    # Unpack (text, images) tuple if present
+                    _submit_images = []
+                    if isinstance(user_input, tuple):
+                        user_input, _submit_images = user_input
+
+                    if not user_input and not _submit_images:
                         continue
-                    
+
                     # Check for commands
-                    if user_input.startswith("/"):
-                        print(f"\n⚙️  {user_input}")
+                    if isinstance(user_input, str) and user_input.startswith("/"):
+                        print(f"\n\u2699\uFE0F  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
-                            # Schedule app exit
                             if app.is_running:
                                 app.exit()
                         continue
-                    
+
                     # Expand paste references back to full content
                     import re as _re
-                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input)
+                    if isinstance(user_input, str):
+                        paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines \u2192 (.+)\]', user_input)
+                    else:
+                        paste_match = None
                     if paste_match:
                         paste_path = Path(paste_match.group(1))
                         if paste_path.exists():
                             full_text = paste_path.read_text(encoding="utf-8")
                             line_count = full_text.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
                             user_input = full_text
                         else:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
-                    else:
-                        if '\n' in user_input:
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}{user_input}{_RST}")
+                    elif isinstance(user_input, str):
+                        if user_input and '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
-                        else:
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
+                        elif user_input:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
-                    
-                    # Extract image references [image: /path/to/file.png] from input
-                    # and convert to multimodal content for VLM models
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}{user_input}{_RST}")
+                        elif _submit_images:
+                            img_count = len(_submit_images)
+                            print()
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}[{img_count} image{'s' if img_count > 1 else ''}]{_RST}")
+
+                    # Build image parts from attached clipboard images
                     import re as _re2
-                    _img_refs = _re2.findall(r'\[image:\s*(.+?)\]', user_input)
-                    if _img_refs:
-                        import base64 as _b64
-                        # Strip image tags from text portion
-                        text_part = _re2.sub(r'\[image:\s*.+?\]', '', user_input).strip()
-                        _img_parts = []
-                        for img_p in _img_refs:
-                            img_p = img_p.strip()
-                            ip = Path(img_p)
-                            if ip.exists():
-                                data = _b64.b64encode(ip.read_bytes()).decode()
-                                ext = ip.suffix.lower().lstrip('.')
-                                mime = {'png': 'image/png', 'jpg': 'image/jpeg',
-                                        'jpeg': 'image/jpeg', 'gif': 'image/gif',
-                                        'webp': 'image/webp'}.get(ext, 'image/png')
-                                _img_parts.append({
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:{mime};base64,{data}"}
-                                })
-                                _cprint(f"  {_DIM}📎 attached {ip.name} ({ip.stat().st_size // 1024}KB){_RST}")
-                            else:
-                                _cprint(f"  {_DIM}⚠ image not found: {img_p}{_RST}")
-                        if _img_parts:
-                            # Build multimodal content list for OpenAI vision format
-                            content_parts = []
-                            if text_part:
-                                content_parts.append({"type": "text", "text": text_part})
-                            content_parts.extend(_img_parts)
-                            user_input = content_parts  # chat() will handle list content
+                    _img_parts = []
+                    import base64 as _b64
+                    for ip in _submit_images:
+                        if ip.exists():
+                            data = _b64.b64encode(ip.read_bytes()).decode()
+                            ext = ip.suffix.lower().lstrip('.')
+                            mime = {'png': 'image/png', 'jpg': 'image/jpeg',
+                                    'jpeg': 'image/jpeg', 'gif': 'image/gif',
+                                    'webp': 'image/webp'}.get(ext, 'image/png')
+                            _img_parts.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime};base64,{data}"}
+                            })
+                            _cprint(f"  {_DIM}\U0001F4CE attached {ip.name} ({ip.stat().st_size // 1024}KB){_RST}")
+
+                    # Also extract inline [image: /path] references (legacy format)
+                    if isinstance(user_input, str):
+                        _inline_refs = _re2.findall(r'\[image:\s*(.+?)\]', user_input)
+                        if _inline_refs:
+                            user_input = _re2.sub(r'\[image:\s*.+?\]', '', user_input).strip()
+                            for img_p in _inline_refs:
+                                ip = Path(img_p.strip())
+                                if ip.exists():
+                                    data = _b64.b64encode(ip.read_bytes()).decode()
+                                    ext = ip.suffix.lower().lstrip('.')
+                                    mime = {'png': 'image/png', 'jpg': 'image/jpeg',
+                                            'jpeg': 'image/jpeg', 'gif': 'image/gif',
+                                            'webp': 'image/webp'}.get(ext, 'image/png')
+                                    _img_parts.append({
+                                        "type": "image_url",
+                                        "image_url": {"url": f"data:{mime};base64,{data}"}
+                                    })
+                                    _cprint(f"  {_DIM}\U0001F4CE attached {ip.name} ({ip.stat().st_size // 1024}KB){_RST}")
+
+                    if _img_parts:
+                        content_parts = []
+                        text_part = user_input if isinstance(user_input, str) else ""
+                        if text_part:
+                            content_parts.append({"type": "text", "text": text_part})
+                        content_parts.extend(_img_parts)
+                        user_input = content_parts
 
                     # Regular chat - run agent
                     self._agent_running = True
