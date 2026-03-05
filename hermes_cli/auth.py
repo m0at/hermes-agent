@@ -361,6 +361,8 @@ def resolve_provider(
 
     if normalized in {"openrouter", "custom"}:
         return "openrouter"
+    if normalized == "local":
+        return "local"
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":

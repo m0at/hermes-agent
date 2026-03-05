@@ -12,6 +12,7 @@ import requests
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
+
 logger = logging.getLogger(__name__)
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
@@ -33,6 +34,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "meta-llama/llama-3.3-70b-instruct": 131072,
     "deepseek/deepseek-chat-v3": 65536,
     "qwen/qwen-2.5-72b-instruct": 32768,
+    "qwen/qwen3-coder": 131072,
+    "qwen/qwen3.5-72b": 262144,
+    "qwen/qwen3.5-32b": 262144,
+    "qwen/qwen3.5-9b": 262144,
+    "qwen/qwen3.5-4b": 262144,
+    "local/qwen3.5-9b": 32768,
 }
 
 
