@@ -40,6 +40,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen/qwen3.5-9b": 262144,
     "qwen/qwen3.5-4b": 262144,
     "local/qwen3.5-9b": 32768,
+    # WebGPU client-side models (conservative limits for browser VRAM)
+    "webgpu/qwen3-4b": 8192,
+    "webgpu/qwen2.5-3b": 8192,
+    "webgpu/llama-3.1-8b": 8192,
+    "webgpu/mistral-7b": 8192,
+    "webgpu/smollm2-1.7b": 4096,
 }
 
 

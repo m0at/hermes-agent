@@ -243,6 +243,9 @@ def resolve_runtime_provider(
     if provider == "local" or requested_provider == "local":
         return _resolve_local_runtime(requested_provider=requested_provider)
 
+    if provider == "webgpu" or requested_provider == "webgpu":
+        return _resolve_webgpu_runtime(requested_provider=requested_provider)
+
     runtime = _resolve_openrouter_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
@@ -250,6 +253,55 @@ def resolve_runtime_provider(
     )
     runtime["requested_provider"] = requested_provider
     return runtime
+
+
+WEBGPU_BRIDGE_PORT = 8801
+
+
+def _resolve_webgpu_runtime(*, requested_provider: str = "webgpu") -> Dict[str, Any]:
+    """Resolve WebGPU provider — browser-side inference via the bridge server."""
+    port = int(os.getenv("HERMES_WEBGPU_PORT", str(WEBGPU_BRIDGE_PORT)))
+    base_url = f"http://127.0.0.1:{port}/v1"
+
+    if not _local_server_alive(port):
+        # Auto-start the bridge server
+        import subprocess
+        import sys
+        import time
+
+        cmd = [sys.executable, "-m", "web_client.bridge", "--port", str(port)]
+        print(f"WebGPU bridge not running. Starting it...")
+        print(f"  $ {' '.join(cmd)}")
+
+        try:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except Exception as e:
+            print(f"  Failed to start bridge: {e}")
+
+        print(f"  Waiting for bridge on port {port}...", end="", flush=True)
+        for i in range(30):
+            if _local_server_alive(port):
+                print(f" ready!")
+                break
+            time.sleep(0.5)
+            if i % 4 == 0 and i > 0:
+                print(".", end="", flush=True)
+        else:
+            print(f"\n  Bridge started. Open http://127.0.0.1:{port}/ to load a model.")
+
+    return {
+        "provider": "webgpu",
+        "api_mode": "chat_completions",
+        "base_url": base_url,
+        "api_key": "webgpu-local",
+        "source": "webgpu-bridge",
+        "requested_provider": requested_provider,
+    }
 
 
 def format_runtime_provider_error(error: Exception) -> str:
