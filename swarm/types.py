@@ -7,6 +7,14 @@ from enum import Enum
 from typing import Any
 
 
+class MessageType(Enum):
+    result = "result"
+    request = "request"
+    status = "status"
+    error = "error"
+    data = "data"
+
+
 class TaskState(Enum):
     pending = "pending"
     queued = "queued"
@@ -85,3 +93,14 @@ class ArtifactRef:
     size_bytes: int = 0
     checksum: str = ""
     created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class SwarmMessage:
+    from_agent: str
+    to_agent: str  # agent id or "broadcast"
+    msg_type: MessageType
+    payload: dict[str, Any]
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    in_reply_to: str | None = None
