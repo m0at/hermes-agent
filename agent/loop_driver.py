@@ -104,6 +104,7 @@ def drive_loop(
     final_response = None
     interrupted = False
     codex_ack_continuations = 0
+    agent._codex_auth_retry_attempted = False
 
     agent.clear_interrupt()
 
@@ -505,6 +506,9 @@ def drive_loop(
 
             else:
                 # ── HandleFinalResponse ──
+                # Transition SM from ValidateToolCalls → HandleFinalResponse
+                sm.step(ResponseKind.Text)
+
                 final_response = content
 
                 # Strip leftover <tool_call> tags
@@ -856,6 +860,7 @@ def _handle_api_error(agent, api_error, api_kwargs, messages,
         status_code == 413
         or 'request entity too large' in error_msg
         or 'payload too large' in error_msg
+        or 'error code: 413' in error_msg
     )
     if is_payload_too_large:
         original_len = len(messages)
@@ -869,7 +874,7 @@ def _handle_api_error(agent, api_error, api_kwargs, messages,
             "messages": messages,
             "completed": False,
             "api_calls": sm.iteration,
-            "error": "Payload too large, cannot compress further",
+            "error": "Request payload too large (413). Cannot compress further.",
             "partial": True,
         }
 
@@ -904,6 +909,18 @@ def _handle_api_error(agent, api_error, api_kwargs, messages,
             "error": "Context length exceeded, cannot compress further",
             "partial": True,
         }
+
+    # Codex 401 refresh: try to refresh credentials before treating as fatal
+    if (
+        agent.api_mode == "codex_responses"
+        and agent.provider == "openai-codex"
+        and status_code == 401
+        and not getattr(agent, '_codex_auth_retry_attempted', False)
+    ):
+        agent._codex_auth_retry_attempted = True
+        if agent._try_refresh_codex_client_credentials(force=True):
+            print(f"{agent.log_prefix}› Codex auth refreshed after 401. Retrying request...")
+            return {"_continue_retry": True}
 
     # Non-retryable client errors
     is_client_error = (
