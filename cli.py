@@ -2179,6 +2179,50 @@ metadata:
             imported += 1
             print(f"  + {name} (command)")
 
+        # --- 3. Pull from Anthropic official skills repo (github.com/anthropics/skills) ---
+        print("\nChecking Anthropic skills repo...")
+        try:
+            import subprocess as _sp
+            result = _sp.run(
+                ["gh", "api", "repos/anthropics/skills/contents/skills", "--jq", ".[].name"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                remote_skills = result.stdout.strip().splitlines()
+                for skill_name in remote_skills:
+                    dest_dir = skills_dir / skill_name
+                    if dest_dir.exists():
+                        skipped += 1
+                        continue
+                    # Get file listing for this skill
+                    files_result = _sp.run(
+                        ["gh", "api", f"repos/anthropics/skills/contents/skills/{skill_name}",
+                         "--jq", r'.[] | "\(.name)\t\(.download_url)"'],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if files_result.returncode != 0:
+                        continue
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    for line in files_result.stdout.strip().splitlines():
+                        parts = line.split("\t", 1)
+                        if len(parts) != 2:
+                            continue
+                        fname, url = parts
+                        if url == "null" or not url:
+                            continue
+                        dl = _sp.run(["curl", "-sL", url], capture_output=True, timeout=30)
+                        if dl.returncode == 0 and dl.stdout:
+                            (dest_dir / fname).write_bytes(dl.stdout)
+                    if (dest_dir / "SKILL.md").exists():
+                        imported += 1
+                        print(f"  + {skill_name} (anthropic)")
+                    else:
+                        shutil.rmtree(dest_dir, ignore_errors=True)
+            else:
+                print("  (gh CLI not available or API error — skipping remote skills)")
+        except Exception as e:
+            print(f"  (skipping remote: {e})")
+
         print(f"\nImported {imported} to {skills_dir}")
         if skipped:
             print(f"  ({skipped} already existed, skipped)")
