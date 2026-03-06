@@ -597,7 +597,13 @@ class AIAgent:
         """Remove <think>...</think> blocks from content, returning only visible text."""
         if not content:
             return ""
-        return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        # Strip closed think blocks
+        result = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        # Strip unclosed <think> (model ran out of tokens mid-think)
+        result = re.sub(r'<think>.*', '', result, flags=re.DOTALL)
+        # Strip orphaned </think> with preceding content (opening tag was in a separate field)
+        result = re.sub(r'^.*?</think>\s*', '', result, flags=re.DOTALL)
+        return result
 
     def _looks_like_codex_intermediate_ack(
         self,
