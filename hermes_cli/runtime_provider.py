@@ -111,11 +111,17 @@ _LOCAL_MODEL_ALIASES = {
 }
 
 
-def _auto_start_local_server(model_id: str, port: int) -> bool:
-    """Spawn the local model server in the background if not already running.
+_managed_server_proc = None
 
+
+def _auto_start_local_server(model_id: str, port: int) -> bool:
+    """Spawn the local model server as a child process tied to this hermes session.
+
+    The server is killed automatically when hermes exits.
     Returns True if the server is alive (already running or successfully started).
     """
+    global _managed_server_proc
+
     if _local_server_alive(port):
         return True
 
@@ -123,12 +129,14 @@ def _auto_start_local_server(model_id: str, port: int) -> bool:
     if not alias:
         return False
 
+    import atexit
+    import signal
     import subprocess
     import sys
     import time
 
     cmd = [sys.executable, "-m", "local_models.serve", alias]
-    print(f"Local model server not running on port {port}. Starting it...")
+    print(f"Starting local model server on port {port}...")
     print(f"  $ {' '.join(cmd)}")
 
     try:
@@ -136,24 +144,41 @@ def _auto_start_local_server(model_id: str, port: int) -> bool:
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            start_new_session=True,  # detach from terminal
         )
+        _managed_server_proc = proc
     except Exception as e:
         print(f"  Failed to start server: {e}")
         return False
 
+    # Kill server when hermes exits
+    def _cleanup_server():
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    atexit.register(_cleanup_server)
+    # Also handle SIGTERM
+    _prev_sigterm = signal.getsignal(signal.SIGTERM)
+    def _sigterm_handler(signum, frame):
+        _cleanup_server()
+        if callable(_prev_sigterm) and _prev_sigterm not in (signal.SIG_DFL, signal.SIG_IGN):
+            _prev_sigterm(signum, frame)
+        else:
+            raise SystemExit(1)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     # Wait up to 60s for the server to come alive (model loading takes time)
-    print(f"  Waiting for server on port {port}...", end="", flush=True)
+    print(f"  Waiting for model to load...", end="", flush=True)
     for i in range(120):
-        # Check if process died
         ret = proc.poll()
         if ret is not None:
             stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
             print(f"\n  Server exited with code {ret}")
             if stderr:
-                # Show last few lines of error
-                lines = stderr.strip().splitlines()
-                for line in lines[-5:]:
+                for line in stderr.strip().splitlines()[-5:]:
                     print(f"    {line}")
             return False
         if _local_server_alive(port):
