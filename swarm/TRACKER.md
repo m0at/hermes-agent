@@ -56,3 +56,18 @@ Local scaling: `SWARM_LOCAL_MAX_CONCURRENT` (default: 2)
 | N6 | Checkpoint/resume for subtree state | DEFERRED |
 | N7 | Distributed browser pool | DEFERRED |
 | N8 | Watch agents (logs, CI, deploys) | DEFERRED |
+
+## Session 2 Features
+
+| # | Task | Status |
+|---|------|--------|
+| F1 | /context command (ASCII context gauge) | DONE |
+| F2 | /swarm wired into CLI with task planner | DONE |
+| F3 | Real AIAgent in LocalWorkerBackend | DONE |
+| F4 | Premature quit detection + nudge | DONE |
+| F5 | Live swarm dashboard (Rich Live) | DONE |
+| F6 | Ctrl+B background jobs + /jobs + /fg | DONE |
+| F7 | 86 swarm module tests | DONE |
+| F8 | 32+ headless CLI tests | DONE |
+| F9 | BudgetExceededError kwargs fix | DONE |
+| F10 | SOUL.md test isolation fix | DONE |

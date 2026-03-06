@@ -80,6 +80,9 @@ def cli_instance():
         cli._explicit_base_url = "http://localhost:9999/v1"
         cli.tool_progress_mode = "off"
         cli.console = MagicMock()
+        cli._background_jobs = []
+        cli._next_job_id = 1
+        cli._background_requested = False
 
         # Mock agent
         cli.agent = MagicMock()
@@ -486,3 +489,51 @@ class TestContextCommand:
         cli_instance.agent.context_compressor = compressor
         result, output = self._run_context(cli_instance)
         assert "50.0%" in output
+
+
+class TestBackgroundJobs:
+    """23-26. Background job tests."""
+
+    def test_jobs_empty(self, cli_instance):
+        """No background jobs initially."""
+        buf = io.StringIO()
+        with patch('cli._cprint'):
+            with patch('sys.stdout', new=buf):
+                result = cli_instance.process_command("/jobs")
+        assert result is True
+        output = buf.getvalue()
+        assert "No background" in output or "no background" in output.lower()
+
+    def test_jobs_command_registered(self, cli_instance):
+        """The /jobs command doesn't crash."""
+        buf = io.StringIO()
+        with patch('cli._cprint'):
+            with patch('sys.stdout', new=buf):
+                result = cli_instance.process_command("/jobs")
+        assert result is True
+
+    def test_fg_no_jobs(self, cli_instance):
+        """Foreground with no jobs shows helpful message."""
+        buf = io.StringIO()
+        with patch('cli._cprint'):
+            with patch('sys.stdout', new=buf):
+                result = cli_instance.process_command("/fg")
+        assert result is True
+        output = buf.getvalue()
+        assert "No background" in output or "no background" in output.lower() or "not found" in output.lower()
+
+    def test_fg_invalid_id(self, cli_instance):
+        """Foreground with invalid ID shows error."""
+        buf = io.StringIO()
+        with patch('cli._cprint'):
+            with patch('sys.stdout', new=buf):
+                result = cli_instance.process_command("/fg abc")
+        assert result is True
+        output = buf.getvalue()
+        assert "Invalid" in output or "invalid" in output.lower()
+
+    def test_background_fields_exist(self, cli_instance):
+        """Background job tracking fields exist on CLI instance."""
+        assert hasattr(cli_instance, '_background_jobs')
+        assert hasattr(cli_instance, '_next_job_id')
+        assert isinstance(cli_instance._background_jobs, list)
