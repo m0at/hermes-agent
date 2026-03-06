@@ -97,6 +97,9 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.model_capabilities import needs_tool_adapter
+from agent.tool_prompt_injector import inject_tools_into_system_prompt, format_tool_response
+from agent.tool_response_adapter import adapt_response, should_adapt
 
 
 class AIAgent:
@@ -253,7 +256,8 @@ class AIAgent:
         is_claude = "claude" in self.model.lower()
         self._use_prompt_caching = is_openrouter and is_claude
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
-        
+        self._needs_tool_adapter = needs_tool_adapter(self.model, self.base_url)
+
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         from agent.redact import RedactingFormatter
@@ -2139,10 +2143,11 @@ class AIAgent:
         if self.provider_data_collection:
             provider_preferences["data_collection"] = self.provider_data_collection
 
+        effective_tools = None if self._needs_tool_adapter else (self.tools if self.tools else None)
         api_kwargs = {
             "model": self.model,
             "messages": api_messages,
-            "tools": self.tools if self.tools else None,
+            "tools": effective_tools,
             "timeout": 900.0,
         }
 
@@ -2471,11 +2476,20 @@ class AIAgent:
                 if remaining_calls:
                     print(f"{self.log_prefix}› Interrupt: skipping {len(remaining_calls)} tool call(s)")
                 for skipped_tc in remaining_calls:
-                    skip_msg = {
-                        "role": "tool",
-                        "content": "[Tool execution cancelled - user interrupted]",
-                        "tool_call_id": skipped_tc.id,
-                    }
+                    if self._needs_tool_adapter:
+                        skip_msg = {
+                            "role": "user",
+                            "content": format_tool_response(
+                                skipped_tc.id, skipped_tc.function.name,
+                                "[Tool execution cancelled - user interrupted]",
+                            ),
+                        }
+                    else:
+                        skip_msg = {
+                            "role": "tool",
+                            "content": "[Tool execution cancelled - user interrupted]",
+                            "tool_call_id": skipped_tc.id,
+                        }
                     messages.append(skip_msg)
                     self._log_msg_to_db(skip_msg)
                 break
@@ -2661,11 +2675,17 @@ class AIAgent:
                     f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
                 )
 
-            tool_msg = {
-                "role": "tool",
-                "content": function_result,
-                "tool_call_id": tool_call.id
-            }
+            if self._needs_tool_adapter:
+                tool_msg = {
+                    "role": "user",
+                    "content": format_tool_response(tool_call.id, function_name, function_result),
+                }
+            else:
+                tool_msg = {
+                    "role": "tool",
+                    "content": function_result,
+                    "tool_call_id": tool_call.id,
+                }
             messages.append(tool_msg)
             self._log_msg_to_db(tool_msg)
 
@@ -2677,11 +2697,20 @@ class AIAgent:
                 remaining = len(assistant_message.tool_calls) - i
                 print(f"{self.log_prefix}› Interrupt: skipping {remaining} remaining tool call(s)")
                 for skipped_tc in assistant_message.tool_calls[i:]:
-                    skip_msg = {
-                        "role": "tool",
-                        "content": "[Tool execution skipped - user sent a new message]",
-                        "tool_call_id": skipped_tc.id
-                    }
+                    if self._needs_tool_adapter:
+                        skip_msg = {
+                            "role": "user",
+                            "content": format_tool_response(
+                                skipped_tc.id, skipped_tc.function.name,
+                                "[Tool execution skipped - user sent a new message]",
+                            ),
+                        }
+                    else:
+                        skip_msg = {
+                            "role": "tool",
+                            "content": "[Tool execution skipped - user sent a new message]",
+                            "tool_call_id": skipped_tc.id,
+                        }
                     messages.append(skip_msg)
                     self._log_msg_to_db(skip_msg)
                 break
@@ -3060,6 +3089,8 @@ class AIAgent:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if self._honcho_context:
                 effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
+            if self._needs_tool_adapter and self.tools:
+                effective_system = inject_tools_into_system_prompt(effective_system, self.tools)
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             
@@ -3594,6 +3625,12 @@ class AIAgent:
                 # Reset incomplete scratchpad counter on clean response
                 if hasattr(self, '_incomplete_scratchpad_retries'):
                     self._incomplete_scratchpad_retries = 0
+
+                # Tool adapter: parse <tool_call> XML from response text into
+                # structured tool_calls so the agent loop handles them normally.
+                if self._needs_tool_adapter and should_adapt(response, self.model):
+                    adapt_response(response, self.tools)
+                    assistant_message = response.choices[0].message
 
                 if self.api_mode == "codex_responses" and finish_reason == "incomplete":
                     if not hasattr(self, "_codex_incomplete_retries"):
