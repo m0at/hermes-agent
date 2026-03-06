@@ -51,7 +51,7 @@ if _user_env.exists():
     except UnicodeDecodeError:
         load_dotenv(dotenv_path=_user_env, encoding="latin-1")
     logger.info("Loaded environment variables from %s", _user_env)
-elif _project_env.exists():
+if _project_env.exists():
     try:
         load_dotenv(dotenv_path=_project_env, encoding="utf-8")
     except UnicodeDecodeError:
