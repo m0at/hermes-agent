@@ -1127,7 +1127,7 @@ class GatewayRunner:
 
         # Resolve current model the same way the agent init does:
         # env vars first, then config.yaml always overrides.
-        current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+        current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "local/qwen3.5-9b"
         try:
             if config_path.exists():
                 with open(config_path) as f:
@@ -2061,7 +2061,7 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "local/qwen3.5-9b"
 
             try:
                 import yaml as _y

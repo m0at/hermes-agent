@@ -116,7 +116,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
-        model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
+        model: str = "local/qwen3.5-9b",  # OpenRouter format
         max_iterations: int = 60,  # Default tool-calling iterations
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
@@ -4126,9 +4126,9 @@ class AIAgent:
 
 def main(
     query: str = None,
-    model: str = "anthropic/claude-opus-4.6",
+    model: str = "local/qwen3.5-9b",
     api_key: str = None,
-    base_url: str = "https://openrouter.ai/api/v1",
+    base_url: str = "http://127.0.0.1:8800/v1",
     max_turns: int = 10,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,

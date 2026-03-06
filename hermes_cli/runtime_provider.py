@@ -27,7 +27,10 @@ def _get_model_config() -> Dict[str, Any]:
 
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
-    """Resolve provider request from explicit arg, env, then config."""
+    """Resolve provider request from explicit arg, env, then config.
+
+    Also infers provider from model prefix (e.g. ``local/qwen3.5-9b`` → ``local``).
+    """
     if requested and requested.strip():
         return requested.strip().lower()
 
@@ -39,6 +42,11 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     cfg_provider = model_cfg.get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
+
+    # Infer provider from model prefix when no explicit provider is set
+    model_id = model_cfg.get("default", "")
+    if isinstance(model_id, str) and model_id.startswith("local/"):
+        return "local"
 
     return "auto"
 
