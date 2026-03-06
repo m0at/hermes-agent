@@ -404,6 +404,13 @@ def _run_cleanup():
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
+def _term_width() -> int:
+    """Usable terminal width — accounts for scrollbar gutter in embedded terminals."""
+    import shutil
+    w = shutil.get_terminal_size((80, 24)).columns
+    # Embedded terminals (VS Code, JetBrains) reserve ~1 col for scrollbar
+    return max(w - 1, 40)
+
 _GOLD = "\033[1;33m"    # Bold yellow — closest universal match to the gold theme
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
@@ -2254,8 +2261,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        import shutil as _shutil
-        w = _shutil.get_terminal_size((80, 24)).columns
+        w = _term_width()
         _cprint(f"{_GOLD}{'─' * w}{_RST}")
         print(flush=True)
         
@@ -2331,8 +2337,7 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                import shutil as _shutil
-                w = _shutil.get_terminal_size((80, 24)).columns
+                w = _term_width()
                 label = " ⚕ Hermes "
                 fill = w - 2 - len(label)  # 2 for ╭ and ╮
                 top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
@@ -2792,8 +2797,7 @@ class HermesCLI:
         def _input_height():
             try:
                 doc = input_area.buffer.document
-                import shutil as _shutil
-                available_width = (_shutil.get_terminal_size((80, 24)).columns or 80) - 4  # subtract prompt width
+                available_width = _term_width() - 4  # subtract prompt width
                 if available_width < 10:
                     available_width = 40
                 visual_lines = 0
@@ -2938,8 +2942,7 @@ class HermesCLI:
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Hermes needs your input'))
-            import shutil as _sh
-            _cw = _sh.get_terminal_size((80, 24)).columns
+            _cw = _term_width()
             _fill = max(_cw - 3 - len('Hermes needs your input') - 2, 1)
             lines.append(('class:clarify-border', ' ' + '─' * _fill + '╮\n'))
             lines.append(('class:clarify-border', '│\n'))
@@ -2992,8 +2995,7 @@ class HermesCLI:
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
             lines.append(('class:sudo-title', '🔐 Sudo Password Required'))
-            import shutil as _sh
-            _sw = _sh.get_terminal_size((80, 24)).columns
+            _sw = _term_width()
             _sfill = max(_sw - 3 - len('🔐 Sudo Password Required') - 2, 1)
             lines.append(('class:sudo-border', ' ' + '─' * _sfill + '╮\n'))
             lines.append(('class:sudo-border', '│\n'))
@@ -3034,8 +3036,7 @@ class HermesCLI:
             lines = []
             lines.append(('class:approval-border', '╭─ '))
             lines.append(('class:approval-title', '⚠️  Dangerous Command'))
-            import shutil as _sh
-            _aw = _sh.get_terminal_size((80, 24)).columns
+            _aw = _term_width()
             _afill = max(_aw - 3 - len('⚠️  Dangerous Command') - 2, 1)
             lines.append(('class:approval-border', ' ' + '─' * _afill + '╮\n'))
             lines.append(('class:approval-border', '│\n'))
