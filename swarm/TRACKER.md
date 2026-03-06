@@ -48,11 +48,11 @@ Local scaling: `SWARM_LOCAL_MAX_CONCURRENT` (default: 2)
 
 | # | Task | Status |
 |---|------|--------|
-| N1 | Wire /swarm into cli.py COMMANDS dict | PENDING |
-| N2 | Real AIAgent execution in orchestrator._execute_task | PENDING |
-| N3 | Lambda Labs / AWS remote GPU backend | PENDING |
-| N4 | Retrieval index over code + artifacts | PENDING |
-| N5 | RL data pipeline from swarm traces | PENDING |
-| N6 | Checkpoint/resume for subtree state | PENDING |
-| N7 | Distributed browser pool | PENDING |
-| N8 | Watch agents (logs, CI, deploys) | PENDING |
+| N1 | Wire /swarm into cli.py COMMANDS dict | DONE |
+| N2 | Real AIAgent execution in orchestrator._execute_task | DONE |
+| N3 | Lambda Labs / AWS remote GPU backend | DEFERRED |
+| N4 | Retrieval index over code + artifacts | DEFERRED |
+| N5 | RL data pipeline from swarm traces | DEFERRED |
+| N6 | Checkpoint/resume for subtree state | DEFERRED |
+| N7 | Distributed browser pool | DEFERRED |
+| N8 | Watch agents (logs, CI, deploys) | DEFERRED |

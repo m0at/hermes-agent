@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent.tool_call_parser import ParsedToolCall, content_after_tool_calls, has_tool_calls, parse_tool_calls, strip_tool_calls
+from agent.tool_call_parser import ParsedToolCall, content_after_tool_calls, has_tool_calls, has_tool_call_start, parse_tool_calls, strip_tool_calls
 
 
 # ---------------------------------------------------------------------------
@@ -431,3 +431,27 @@ class TestRealisticQwenOutput:
         result = parse_tool_calls(content)
         assert len(result) == 1
         assert result[0].name == "read_file"
+
+
+# ---------------------------------------------------------------------------
+# 17. has_tool_call_start — detects truncated tool calls
+# ---------------------------------------------------------------------------
+
+class TestHasToolCallStart:
+    def test_complete_tool_call(self):
+        content = '<tool_call>{"name": "x", "arguments": {}}</tool_call>'
+        assert has_tool_call_start(content) is True
+
+    def test_truncated_tool_call(self):
+        content = '<tool_call>{"name": "delegate_task", "arguments": {"goal": "test"'
+        assert has_tool_call_start(content) is True
+
+    def test_no_tool_call(self):
+        assert has_tool_call_start("Just text") is False
+
+    def test_empty(self):
+        assert has_tool_call_start("") is False
+
+    def test_truncated_with_text_before(self):
+        content = 'Let me do this.\n<tool_call>{"name": "x", "arguments": {'
+        assert has_tool_call_start(content) is True

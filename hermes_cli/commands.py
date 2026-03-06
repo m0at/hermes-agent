@@ -24,12 +24,14 @@ COMMANDS = {
     "/config": "Show current configuration",
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
+    "/swarm": "Run parallel agent swarm on a complex task",
     "/platforms": "Show gateway/messaging platform status",
     "/verbose": "Cycle tool progress display: off → new → all → verbose",
     "/thinkon": "Show model thinking/reasoning blocks in responses",
     "/thinkoff": "Hide model thinking/reasoning blocks from responses",
     "/compress": "Manually compress conversation context (flush memories + summarize)",
     "/usage": "Show token usage for the current session",
+    "/context": "Show remaining context window (ASCII bar)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

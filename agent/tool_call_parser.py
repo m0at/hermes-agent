@@ -48,6 +48,11 @@ def has_tool_calls(content: str) -> bool:
     return _TOOL_CALL_RE.search(content) is not None
 
 
+def has_tool_call_start(content: str) -> bool:
+    """Return True if content contains a <tool_call> opening tag, even without closing tag."""
+    return "<tool_call>" in content
+
+
 def content_after_tool_calls(content: str) -> str:
     text = strip_tool_calls(content)
     # Collapse multiple blank lines and strip leading/trailing whitespace.

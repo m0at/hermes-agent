@@ -258,6 +258,11 @@ class AIAgent:
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         self._needs_tool_adapter = needs_tool_adapter(self.model, self.base_url)
 
+        # Local models often have low default max_tokens — bump to 4096
+        # to avoid truncating tool call JSON.
+        if self._needs_tool_adapter and self.max_tokens is None:
+            self.max_tokens = 4096
+
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         from agent.redact import RedactingFormatter
@@ -576,38 +581,28 @@ class AIAgent:
         return {"max_tokens": value}
 
     def _has_content_after_think_block(self, content: str) -> bool:
-        """
-        Check if content has actual text after any <think></think> blocks.
-        
-        This detects cases where the model only outputs reasoning but no actual
-        response, which indicates an incomplete generation that should be retried.
-        
-        Args:
-            content: The assistant message content to check
-            
-        Returns:
-            True if there's meaningful content after think blocks, False otherwise
-        """
+        """Check if content has actual text after any <think></think> blocks."""
         if not content:
             return False
-        
-        # Remove all <think>...</think> blocks (including nested ones, non-greedy)
-        cleaned = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-        
-        # Check if there's any non-whitespace content remaining
-        return bool(cleaned.strip())
-    
+        try:
+            from hermes_rs import has_content_after_think
+            return has_content_after_think(content)
+        except ImportError:
+            cleaned = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+            return bool(cleaned.strip())
+
     def _strip_think_blocks(self, content: str) -> str:
         """Remove <think>...</think> blocks from content, returning only visible text."""
         if not content:
             return ""
-        # Strip closed think blocks
-        result = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-        # Strip unclosed <think> (model ran out of tokens mid-think)
-        result = re.sub(r'<think>.*', '', result, flags=re.DOTALL)
-        # Strip orphaned </think> with preceding content (opening tag was in a separate field)
-        result = re.sub(r'^.*?</think>\s*', '', result, flags=re.DOTALL)
-        return result
+        try:
+            from hermes_rs import strip_think_blocks
+            return strip_think_blocks(content)
+        except ImportError:
+            result = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+            result = re.sub(r'<think>.*', '', result, flags=re.DOTALL)
+            result = re.sub(r'^.*?</think>\s*', '', result, flags=re.DOTALL)
+            return result
 
     def _looks_like_codex_intermediate_ack(
         self,
@@ -3012,15 +3007,27 @@ class AIAgent:
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
-        # Main conversation loop
+        # ── Main conversation loop ──
+        # Try the Rust-accelerated state machine first; fall back to the
+        # legacy Python while-loop if hermes_rs is not built.
+        from agent.loop_driver import is_available as _sm_available
+        if _sm_available():
+            from agent.loop_driver import drive_loop as _drive_loop
+            return _drive_loop(
+                self, messages, active_system_prompt, system_message,
+                conversation_history, user_message if isinstance(user_message, str) else str(user_message),
+                effective_task_id,
+            )
+
+        # Legacy fallback — original while-loop
         api_call_count = 0
         final_response = None
         interrupted = False
         codex_ack_continuations = 0
-        
+
         # Clear any stale interrupt state at start
         self.clear_interrupt()
-        
+
         while api_call_count < self.max_iterations:
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:
@@ -3632,6 +3639,43 @@ class AIAgent:
                     adapt_response(response, self.tools)
                     assistant_message = response.choices[0].message
 
+                    # Detect truncated tool calls: <tool_call> tag present in the
+                    # original content but no structured tool_calls were parsed
+                    # (usually because JSON was cut off by max_tokens).
+                    if not assistant_message.tool_calls:
+                        from agent.tool_call_parser import has_tool_calls as _has_tc
+                        raw_content = getattr(assistant_message, '_original_content', None) or (getattr(assistant_message, 'content', None) or "")
+                        if _has_tc(raw_content) or "<tool_call>" in raw_content:
+                            if not hasattr(self, '_truncated_tc_retries'):
+                                self._truncated_tc_retries = 0
+                            self._truncated_tc_retries += 1
+                            if self._truncated_tc_retries < 3:
+                                nudge = {
+                                    "role": "user",
+                                    "content": (
+                                        "Your tool call was truncated (the JSON was cut off). "
+                                        "Please retry with a simpler, shorter tool call. "
+                                        "If you need to delegate multiple tasks, call the tool "
+                                        "once per task instead of packing them all into one call."
+                                    ),
+                                }
+                                messages.append(nudge)
+                                self._log_msg_to_db(nudge)
+                                print(f"{self.log_prefix}△  Truncated tool call detected, nudging model ({self._truncated_tc_retries}/3)...")
+                                continue
+                            else:
+                                self._truncated_tc_retries = 0
+                                # Strip the broken tool_call tags and treat as text response
+                                from agent.tool_call_parser import strip_tool_calls as _strip_tc
+                                cleaned = _strip_tc(raw_content)
+                                # Also strip unclosed/truncated tool_call tags
+                                cleaned = re.sub(r'<tool_call>.*', '', cleaned, flags=re.DOTALL)
+                                assistant_message.content = cleaned.strip() or None
+                    else:
+                        # Reset counter on successful parse
+                        if hasattr(self, '_truncated_tc_retries'):
+                            self._truncated_tc_retries = 0
+
                 if self.api_mode == "codex_responses" and finish_reason == "incomplete":
                     if not hasattr(self, "_codex_incomplete_retries"):
                         self._codex_incomplete_retries = 0
@@ -3802,7 +3846,15 @@ class AIAgent:
                 else:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
-                    
+
+                    # Strip any leftover <tool_call> tags from the final response
+                    # (e.g. truncated/unparseable tool calls that the adapter couldn't handle)
+                    if "<tool_call>" in final_response:
+                        from agent.tool_call_parser import strip_tool_calls as _strip_tc
+                        final_response = _strip_tc(final_response).strip()
+                        # Also strip unclosed tool_call tags
+                        final_response = re.sub(r'<tool_call>.*', '', final_response, flags=re.DOTALL).strip()
+
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
                         # Track retries for empty-after-think responses

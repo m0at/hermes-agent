@@ -1,11 +1,14 @@
 """Adapt text-based tool calls into structured OpenAI-format tool_calls."""
 
 import json
+import logging
 import os
 from types import SimpleNamespace
 from uuid import uuid4
 
-from agent.tool_call_parser import content_after_tool_calls, has_tool_calls, parse_tool_calls
+logger = logging.getLogger(__name__)
+
+from agent.tool_call_parser import content_after_tool_calls, has_tool_calls, has_tool_call_start, parse_tool_calls
 
 
 def should_adapt(response, model: str) -> bool:
@@ -14,7 +17,8 @@ def should_adapt(response, model: str) -> bool:
     if has_existing:
         return False
     content = getattr(msg, "content", None) or ""
-    if not has_tool_calls(content):
+    # Check for complete tool calls OR truncated ones (opening tag without closing)
+    if not has_tool_calls(content) and not has_tool_call_start(content):
         return False
     return model.startswith("local/") or bool(os.environ.get("HERMES_FORCE_TOOL_INJECTION"))
 
@@ -23,8 +27,13 @@ def adapt_response(response, tools: list[dict]):
     msg = response.choices[0].message
     content = getattr(msg, "content", None) or ""
 
+    # Preserve original content for truncation detection downstream
+    msg._original_content = content
+
     parsed = parse_tool_calls(content)
     if not parsed:
+        if has_tool_call_start(content):
+            logger.warning("Tool call tag found but parsing failed (likely truncated JSON)")
         return response
 
     valid_names = {t["function"]["name"] for t in tools if "function" in t}
