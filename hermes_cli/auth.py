@@ -363,6 +363,8 @@ def resolve_provider(
         return "openrouter"
     if normalized == "local":
         return "local"
+    if normalized == "anthropic":
+        return "anthropic"
     if normalized == "webgpu":
         return "webgpu"
     if normalized in PROVIDER_REGISTRY:

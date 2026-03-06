@@ -1022,10 +1022,11 @@ class HermesCLI:
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
         is_local = resolved_provider == "local"
-        if not is_local and (not isinstance(api_key, str) or not api_key):
+        is_litellm = resolved_provider == "anthropic"  # litellm handles routing
+        if not is_local and not is_litellm and (not isinstance(api_key, str) or not api_key):
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
-        if not isinstance(base_url, str) or not base_url:
+        if not is_litellm and (not isinstance(base_url, str) or not base_url):
             self.console.print("[bold red]Provider resolver returned an empty base URL.[/]")
             return False
 
@@ -1940,44 +1941,52 @@ class HermesCLI:
         elif cmd_lower.startswith("/model"):
             # Shortcut aliases for quick model switching
             _MODEL_ALIASES = {
-                "opus": ("anthropic/claude-opus-4", "openrouter"),
-                "sonnet": ("anthropic/claude-sonnet-4", "openrouter"),
-                "haiku": ("anthropic/claude-haiku-4", "openrouter"),
-                "qwen": ("local/qwen3.5-9b", "local"),
+                "opus": "anthropic/claude-opus-4",
+                "sonnet": "anthropic/claude-sonnet-4",
+                "haiku": "anthropic/claude-haiku-4",
+                "qwen": "local/qwen3.5-9b",
             }
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
                 arg = parts[1].strip()
-                alias = _MODEL_ALIASES.get(arg.lower())
-                if alias:
-                    new_model, new_provider = alias
-                    self.model = new_model
-                    self.requested_provider = new_provider
-                    self.agent = None  # Force re-init
-                    if new_provider == "local":
-                        self.api_key = "local"
-                        self.base_url = "http://127.0.0.1:8800/v1"
-                        self._explicit_base_url = self.base_url
-                    else:
-                        # OpenRouter — need API key
-                        api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-                        if not api_key:
-                            print(f"  Set OPENROUTER_API_KEY to use {new_model}")
-                            return True
-                        self.api_key = api_key
+                new_model = _MODEL_ALIASES.get(arg.lower(), arg)
+                self.model = new_model
+                self.agent = None  # Force re-init
+                if new_model.startswith("local/"):
+                    self.requested_provider = "local"
+                    self.api_key = "local"
+                    self.base_url = "http://127.0.0.1:8800/v1"
+                    self._explicit_base_url = self.base_url
+                elif new_model.startswith("anthropic/") or new_model.startswith("claude"):
+                    # Prefer ANTHROPIC_API_KEY (direct via litellm), fall back to OpenRouter
+                    ant_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+                    or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                    if ant_key:
+                        self.requested_provider = "anthropic"
+                        self.api_key = ant_key
+                        self.base_url = ""  # litellm handles routing
+                        self._explicit_base_url = ""
+                    elif or_key:
+                        self.requested_provider = "openrouter"
+                        self.api_key = or_key
                         self.base_url = "https://openrouter.ai/api/v1"
                         self._explicit_base_url = self.base_url
-                    save_config_value("model.default", new_model)
-                    print(f"  Switched to: {new_model} ({new_provider})")
-                else:
-                    # Raw model name
-                    new_model = arg
-                    self.model = new_model
-                    self.agent = None
-                    if save_config_value("model.default", new_model):
-                        print(f"(^_^)b Model changed to: {new_model} (saved to config)")
                     else:
-                        print(f"(^_^) Model changed to: {new_model} (session only)")
+                        print("  Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY first")
+                        return True
+                else:
+                    # Unknown model — try OpenRouter
+                    or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                    if or_key:
+                        self.requested_provider = "openrouter"
+                        self.api_key = or_key
+                        self.base_url = "https://openrouter.ai/api/v1"
+                        self._explicit_base_url = self.base_url
+                save_config_value("model.default", new_model)
+                provider_label = self.requested_provider
+                if provider_label == "anthropic":
+                    provider_label = "anthropic (direct)"
+                print(f"  Switched to: {new_model} ({provider_label})")
             else:
                 print(f"Current model: {self.model}")
                 print("  Shortcuts: /model opus | sonnet | haiku | qwen")

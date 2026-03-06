@@ -276,6 +276,19 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    if provider == "anthropic" or requested_provider == "anthropic":
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        return {
+            "provider": "anthropic",
+            "api_mode": "chat_completions",
+            "base_url": "",  # litellm handles routing
+            "api_key": api_key,
+            "source": "env",
+            "requested_provider": "anthropic",
+        }
+
     if provider == "local" or requested_provider == "local":
         return _resolve_local_runtime(requested_provider=requested_provider)
 
