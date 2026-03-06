@@ -213,13 +213,8 @@ class AIAgent:
             self.provider = "openai-codex"
         else:
             self.api_mode = "chat_completions"
-        if base_url and "api.anthropic.com" in base_url.strip().lower():
-            raise ValueError(
-                "Anthropic's native /v1/messages API is not supported yet (planned for a future release). "
-                "Hermes currently requires OpenAI-compatible /chat/completions endpoints. "
-                "To use Claude models now, route through OpenRouter (OPENROUTER_API_KEY) "
-                "or any OpenAI-compatible proxy that wraps the Anthropic API."
-            )
+        # Use litellm for direct Anthropic API access (ANTHROPIC_API_KEY)
+        self._use_litellm = (provider_name == "anthropic")
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
@@ -358,17 +353,23 @@ class AIAgent:
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:
-            self.client = OpenAI(**client_kwargs)
-            if not self.quiet_mode:
-                print(f"› AI Agent initialized with model: {self.model}")
-                if base_url:
-                    print(f"› Using custom base URL: {base_url}")
-                # Always show API key info (masked) for debugging auth issues
-                key_used = client_kwargs.get("api_key", "none")
-                if key_used and key_used != "dummy-key" and len(key_used) > 12:
-                    print(f"› Using API key: {key_used[:8]}...{key_used[-4:]}")
-                else:
-                    print(f"△  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
+            if self._use_litellm:
+                # Direct Anthropic via litellm — no OpenAI client needed
+                self.client = None
+                if not self.quiet_mode:
+                    print(f"› AI Agent initialized with model: {self.model} (anthropic direct)")
+            else:
+                self.client = OpenAI(**client_kwargs)
+                if not self.quiet_mode:
+                    print(f"› AI Agent initialized with model: {self.model}")
+                    if base_url:
+                        print(f"› Using custom base URL: {base_url}")
+                    # Always show API key info (masked) for debugging auth issues
+                    key_used = client_kwargs.get("api_key", "none")
+                    if key_used and key_used != "dummy-key" and len(key_used) > 12:
+                        print(f"› Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    else:
+                        print(f"△  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
@@ -2053,7 +2054,7 @@ class AIAgent:
                 if self.api_mode == "codex_responses":
                     result["response"] = self._run_codex_stream(api_kwargs)
                 else:
-                    result["response"] = self.client.chat.completions.create(**api_kwargs)
+                    result["response"] = self._chat_completion(**api_kwargs)
             except Exception as e:
                 result["error"] = e
 
@@ -2063,19 +2064,28 @@ class AIAgent:
             t.join(timeout=0.3)
             if self._interrupt_requested:
                 # Force-close the HTTP connection to stop token generation
-                try:
-                    self.client.close()
-                except Exception:
-                    pass
-                # Rebuild the client for future calls (cheap, no network)
-                try:
-                    self.client = OpenAI(**self._client_kwargs)
-                except Exception:
-                    pass
+                if self.client:
+                    try:
+                        self.client.close()
+                    except Exception:
+                        pass
+                    # Rebuild the client for future calls (cheap, no network)
+                    try:
+                        self.client = OpenAI(**self._client_kwargs)
+                    except Exception:
+                        pass
                 raise InterruptedError("Agent interrupted during API call")
         if result["error"] is not None:
             raise result["error"]
         return result["response"]
+
+    def _chat_completion(self, **kwargs):
+        """Route chat completion to litellm (Anthropic direct) or OpenAI client."""
+        if self._use_litellm:
+            import litellm
+            litellm.drop_params = True
+            return litellm.completion(**kwargs)
+        return self.client.chat.completions.create(**kwargs)
 
     def _apply_qwen_params(self, kwargs: dict) -> dict:
         """Apply Qwen-specific sampling params to an API kwargs dict in-place."""
@@ -2385,7 +2395,7 @@ class AIAgent:
                     **self._max_tokens_param(5120),
                 }
                 self._apply_qwen_params(api_kwargs)
-                response = self.client.chat.completions.create(**api_kwargs, timeout=30.0)
+                response = self._chat_completion(**api_kwargs, timeout=30.0)
 
             # Extract tool calls from the response, handling both API formats
             tool_calls = []
@@ -2794,7 +2804,7 @@ class AIAgent:
                     summary_kwargs["extra_body"] = summary_extra_body
 
                 self._apply_qwen_params(summary_kwargs)
-                summary_response = self.client.chat.completions.create(**summary_kwargs)
+                summary_response = self._chat_completion(**summary_kwargs)
 
                 if summary_response.choices and summary_response.choices[0].message.content:
                     final_response = summary_response.choices[0].message.content
@@ -2827,7 +2837,7 @@ class AIAgent:
                         summary_kwargs["extra_body"] = summary_extra_body
 
                     self._apply_qwen_params(summary_kwargs)
-                    summary_response = self.client.chat.completions.create(**summary_kwargs)
+                    summary_response = self._chat_completion(**summary_kwargs)
 
                     if summary_response.choices and summary_response.choices[0].message.content:
                         final_response = summary_response.choices[0].message.content
