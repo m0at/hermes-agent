@@ -168,15 +168,18 @@ def _auto_start_local_server(model_id: str, port: int) -> bool:
                 proc.kill()
 
     atexit.register(_cleanup_server)
-    # Also handle SIGTERM
-    _prev_sigterm = signal.getsignal(signal.SIGTERM)
-    def _sigterm_handler(signum, frame):
-        _cleanup_server()
-        if callable(_prev_sigterm) and _prev_sigterm not in (signal.SIG_DFL, signal.SIG_IGN):
-            _prev_sigterm(signum, frame)
-        else:
-            raise SystemExit(1)
-    signal.signal(signal.SIGTERM, _sigterm_handler)
+    # Also handle SIGTERM (best-effort — fails in non-main threads)
+    try:
+        _prev_sigterm = signal.getsignal(signal.SIGTERM)
+        def _sigterm_handler(signum, frame):
+            _cleanup_server()
+            if callable(_prev_sigterm) and _prev_sigterm not in (signal.SIG_DFL, signal.SIG_IGN):
+                _prev_sigterm(signum, frame)
+            else:
+                raise SystemExit(1)
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+    except ValueError:
+        pass  # Not in main thread; atexit cleanup is sufficient
 
     # Wait up to 60s for the server to come alive (model loading takes time)
     print(f"  Waiting for model to load...", end="", flush=True)
