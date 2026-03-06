@@ -3663,12 +3663,6 @@ metadata:
                                 app.exit()
                         continue
 
-                    # Bare model alias detection (e.g. just typing "haiku")
-                    _MODEL_SHORTCUT_NAMES = {"opus", "sonnet", "haiku", "qwen"}
-                    if isinstance(user_input, str) and user_input.strip().lower() in _MODEL_SHORTCUT_NAMES:
-                        self.process_command(f"/model {user_input.strip()}")
-                        continue
-
                     # Expand paste references back to full content
                     import re as _re
                     paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines \u2192 (.+)\]', user_input) if isinstance(user_input, str) else None
