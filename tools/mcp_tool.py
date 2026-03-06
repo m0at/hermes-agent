@@ -72,8 +72,8 @@ logger = logging.getLogger(__name__)
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
 try:
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
     _MCP_AVAILABLE = True
     try:
         from mcp.client.streamable_http import streamablehttp_client

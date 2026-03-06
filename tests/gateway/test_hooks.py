@@ -109,8 +109,7 @@ class TestDiscoverAndLoad:
 
 
 class TestEmit:
-    @pytest.mark.asyncio
-    async def test_emit_calls_sync_handler(self, tmp_path):
+    def test_emit_calls_sync_handler(self, tmp_path):
         results = []
 
         _create_hook(tmp_path, "sync-hook", '["agent:start"]',
@@ -126,11 +125,10 @@ class TestEmit:
         handler_fn = reg._handlers["agent:start"][0]
         handler_fn.__globals__["results"] = results
 
-        await reg.emit("agent:start", {"test": True})
+        asyncio.run(reg.emit("agent:start", {"test": True}))
         assert "agent:start" in results
 
-    @pytest.mark.asyncio
-    async def test_emit_calls_async_handler(self, tmp_path):
+    def test_emit_calls_async_handler(self, tmp_path):
         results = []
 
         hook_dir = tmp_path / "async-hook"
@@ -152,11 +150,10 @@ class TestEmit:
         handler_fn = reg._handlers["agent:end"][0]
         handler_fn.__globals__["results"] = results
 
-        await reg.emit("agent:end", {})
+        asyncio.run(reg.emit("agent:end", {}))
         assert "agent:end" in results
 
-    @pytest.mark.asyncio
-    async def test_wildcard_matching(self, tmp_path):
+    def test_wildcard_matching(self, tmp_path):
         results = []
 
         _create_hook(tmp_path, "wildcard-hook", '["command:*"]',
@@ -171,19 +168,17 @@ class TestEmit:
         handler_fn = reg._handlers["command:*"][0]
         handler_fn.__globals__["results"] = results
 
-        await reg.emit("command:reset", {})
+        asyncio.run(reg.emit("command:reset", {}))
         assert "command:reset" in results
 
-    @pytest.mark.asyncio
-    async def test_no_handlers_for_event(self, tmp_path):
+    def test_no_handlers_for_event(self, tmp_path):
         reg = HookRegistry()
         # Should not raise and should have no handlers registered
-        result = await reg.emit("unknown:event", {})
+        result = asyncio.run(reg.emit("unknown:event", {}))
         assert result is None
         assert not reg._handlers.get("unknown:event")
 
-    @pytest.mark.asyncio
-    async def test_handler_error_does_not_propagate(self, tmp_path):
+    def test_handler_error_does_not_propagate(self, tmp_path):
         _create_hook(tmp_path, "bad-hook", '["agent:start"]',
                       "def handle(event_type, context):\n"
                       "    raise ValueError('boom')\n")
@@ -194,11 +189,10 @@ class TestEmit:
 
         assert len(reg._handlers.get("agent:start", [])) == 1
         # Should not raise even though handler throws
-        result = await reg.emit("agent:start", {})
+        result = asyncio.run(reg.emit("agent:start", {}))
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_emit_default_context(self, tmp_path):
+    def test_emit_default_context(self, tmp_path):
         captured = []
 
         _create_hook(tmp_path, "ctx-hook", '["agent:start"]',
@@ -213,5 +207,5 @@ class TestEmit:
         handler_fn = reg._handlers["agent:start"][0]
         handler_fn.__globals__["captured"] = captured
 
-        await reg.emit("agent:start")  # no context arg
+        asyncio.run(reg.emit("agent:start"))  # no context arg
         assert captured[0] == {}

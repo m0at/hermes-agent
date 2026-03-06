@@ -87,6 +87,7 @@ class TestPreToolCheck:
         # Create a minimal mock agent with _interrupt_requested = True
         agent = MagicMock()
         agent._interrupt_requested = True
+        agent._needs_tool_adapter = False
         agent.log_prefix = ""
         agent._log_msg_to_db = MagicMock()
 

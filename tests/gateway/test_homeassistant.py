@@ -4,6 +4,7 @@ Tests real logic: state change formatting, event filtering pipeline,
 cooldown behavior, config integration, and adapter initialization.
 """
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -258,25 +259,22 @@ def _make_event(entity_id, old_state, new_state, old_attrs=None, new_attrs=None)
 
 
 class TestEventFilteringPipeline:
-    @pytest.mark.asyncio
-    async def test_ignored_entity_not_forwarded(self):
+    def test_ignored_entity_not_forwarded(self):
         adapter = _make_adapter(ignore_entities=["sensor.uptime"])
-        await adapter._handle_ha_event(_make_event("sensor.uptime", "100", "101"))
+        asyncio.run(adapter._handle_ha_event(_make_event("sensor.uptime", "100", "101")))
         adapter.handle_message.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_unwatched_domain_not_forwarded(self):
+    def test_unwatched_domain_not_forwarded(self):
         adapter = _make_adapter(watch_domains=["climate"])
-        await adapter._handle_ha_event(_make_event("light.bedroom", "off", "on"))
+        asyncio.run(adapter._handle_ha_event(_make_event("light.bedroom", "off", "on")))
         adapter.handle_message.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_watched_domain_forwarded(self):
+    def test_watched_domain_forwarded(self):
         adapter = _make_adapter(watch_domains=["climate"], cooldown_seconds=0)
-        await adapter._handle_ha_event(
+        asyncio.run(adapter._handle_ha_event(
             _make_event("climate.thermostat", "off", "heat",
                         new_attrs={"friendly_name": "Thermostat", "current_temperature": 20, "temperature": 22})
-        )
+        ))
         adapter.handle_message.assert_called_once()
 
         # Verify the actual MessageEvent text content
@@ -286,42 +284,37 @@ class TestEventFilteringPipeline:
         assert msg_event.source.platform == Platform.HOMEASSISTANT
         assert msg_event.source.chat_id == "ha_events"
 
-    @pytest.mark.asyncio
-    async def test_watched_entity_forwarded(self):
+    def test_watched_entity_forwarded(self):
         adapter = _make_adapter(watch_entities=["sensor.important"], cooldown_seconds=0)
-        await adapter._handle_ha_event(
+        asyncio.run(adapter._handle_ha_event(
             _make_event("sensor.important", "10", "20",
                         new_attrs={"friendly_name": "Important Sensor", "unit_of_measurement": "W"})
-        )
+        ))
         adapter.handle_message.assert_called_once()
         msg_event = adapter.handle_message.call_args[0][0]
         assert "10W" in msg_event.text and "20W" in msg_event.text
 
-    @pytest.mark.asyncio
-    async def test_no_filters_passes_everything(self):
+    def test_no_filters_passes_everything(self):
         adapter = _make_adapter(cooldown_seconds=0)
-        await adapter._handle_ha_event(_make_event("cover.blinds", "closed", "open"))
+        asyncio.run(adapter._handle_ha_event(_make_event("cover.blinds", "closed", "open")))
         adapter.handle_message.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_same_state_not_forwarded(self):
+    def test_same_state_not_forwarded(self):
         adapter = _make_adapter(cooldown_seconds=0)
-        await adapter._handle_ha_event(_make_event("light.x", "on", "on"))
+        asyncio.run(adapter._handle_ha_event(_make_event("light.x", "on", "on")))
         adapter.handle_message.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_empty_entity_id_skipped(self):
+    def test_empty_entity_id_skipped(self):
         adapter = _make_adapter()
-        await adapter._handle_ha_event({"data": {"entity_id": ""}})
+        asyncio.run(adapter._handle_ha_event({"data": {"entity_id": ""}}))
         adapter.handle_message.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_message_event_has_correct_source(self):
+    def test_message_event_has_correct_source(self):
         adapter = _make_adapter(cooldown_seconds=0)
-        await adapter._handle_ha_event(
+        asyncio.run(adapter._handle_ha_event(
             _make_event("light.test", "off", "on",
                         new_attrs={"friendly_name": "Test Light"})
-        )
+        ))
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.source.user_name == "Home Assistant"
         assert msg_event.source.chat_type == "channel"
@@ -334,67 +327,75 @@ class TestEventFilteringPipeline:
 
 
 class TestCooldown:
-    @pytest.mark.asyncio
-    async def test_cooldown_blocks_rapid_events(self):
-        adapter = _make_adapter(cooldown_seconds=60)
+    def test_cooldown_blocks_rapid_events(self):
+        async def _test():
+            adapter = _make_adapter(cooldown_seconds=60)
 
-        event = _make_event("sensor.temp", "20", "21",
-                            new_attrs={"friendly_name": "Temp"})
-        await adapter._handle_ha_event(event)
-        assert adapter.handle_message.call_count == 1
+            event = _make_event("sensor.temp", "20", "21",
+                                new_attrs={"friendly_name": "Temp"})
+            await adapter._handle_ha_event(event)
+            assert adapter.handle_message.call_count == 1
 
-        # Second event immediately after should be blocked
-        event2 = _make_event("sensor.temp", "21", "22",
-                             new_attrs={"friendly_name": "Temp"})
-        await adapter._handle_ha_event(event2)
-        assert adapter.handle_message.call_count == 1  # Still 1
+            # Second event immediately after should be blocked
+            event2 = _make_event("sensor.temp", "21", "22",
+                                 new_attrs={"friendly_name": "Temp"})
+            await adapter._handle_ha_event(event2)
+            assert adapter.handle_message.call_count == 1  # Still 1
 
-    @pytest.mark.asyncio
-    async def test_cooldown_expires(self):
-        adapter = _make_adapter(cooldown_seconds=1)
+        asyncio.run(_test())
 
-        event = _make_event("sensor.temp", "20", "21",
-                            new_attrs={"friendly_name": "Temp"})
-        await adapter._handle_ha_event(event)
-        assert adapter.handle_message.call_count == 1
+    def test_cooldown_expires(self):
+        async def _test():
+            adapter = _make_adapter(cooldown_seconds=1)
 
-        # Simulate time passing beyond cooldown
-        adapter._last_event_time["sensor.temp"] = time.time() - 2
+            event = _make_event("sensor.temp", "20", "21",
+                                new_attrs={"friendly_name": "Temp"})
+            await adapter._handle_ha_event(event)
+            assert adapter.handle_message.call_count == 1
 
-        event2 = _make_event("sensor.temp", "21", "22",
-                             new_attrs={"friendly_name": "Temp"})
-        await adapter._handle_ha_event(event2)
-        assert adapter.handle_message.call_count == 2
+            # Simulate time passing beyond cooldown
+            adapter._last_event_time["sensor.temp"] = time.time() - 2
 
-    @pytest.mark.asyncio
-    async def test_different_entities_independent_cooldowns(self):
-        adapter = _make_adapter(cooldown_seconds=60)
+            event2 = _make_event("sensor.temp", "21", "22",
+                                 new_attrs={"friendly_name": "Temp"})
+            await adapter._handle_ha_event(event2)
+            assert adapter.handle_message.call_count == 2
 
-        await adapter._handle_ha_event(
-            _make_event("sensor.a", "1", "2", new_attrs={"friendly_name": "A"})
-        )
-        await adapter._handle_ha_event(
-            _make_event("sensor.b", "3", "4", new_attrs={"friendly_name": "B"})
-        )
-        # Both should pass - different entities
-        assert adapter.handle_message.call_count == 2
+        asyncio.run(_test())
 
-        # Same entity again - should be blocked
-        await adapter._handle_ha_event(
-            _make_event("sensor.a", "2", "3", new_attrs={"friendly_name": "A"})
-        )
-        assert adapter.handle_message.call_count == 2  # Still 2
+    def test_different_entities_independent_cooldowns(self):
+        async def _test():
+            adapter = _make_adapter(cooldown_seconds=60)
 
-    @pytest.mark.asyncio
-    async def test_zero_cooldown_passes_all(self):
-        adapter = _make_adapter(cooldown_seconds=0)
-
-        for i in range(5):
             await adapter._handle_ha_event(
-                _make_event("sensor.temp", str(i), str(i + 1),
-                            new_attrs={"friendly_name": "Temp"})
+                _make_event("sensor.a", "1", "2", new_attrs={"friendly_name": "A"})
             )
-        assert adapter.handle_message.call_count == 5
+            await adapter._handle_ha_event(
+                _make_event("sensor.b", "3", "4", new_attrs={"friendly_name": "B"})
+            )
+            # Both should pass - different entities
+            assert adapter.handle_message.call_count == 2
+
+            # Same entity again - should be blocked
+            await adapter._handle_ha_event(
+                _make_event("sensor.a", "2", "3", new_attrs={"friendly_name": "A"})
+            )
+            assert adapter.handle_message.call_count == 2  # Still 2
+
+        asyncio.run(_test())
+
+    def test_zero_cooldown_passes_all(self):
+        async def _test():
+            adapter = _make_adapter(cooldown_seconds=0)
+
+            for i in range(5):
+                await adapter._handle_ha_event(
+                    _make_event("sensor.temp", str(i), str(i + 1),
+                                new_attrs={"friendly_name": "Temp"})
+                )
+            assert adapter.handle_message.call_count == 5
+
+        asyncio.run(_test())
 
 
 # ---------------------------------------------------------------------------
@@ -493,8 +494,7 @@ class TestSendViaRestApi:
 
         return mock_session
 
-    @pytest.mark.asyncio
-    async def test_send_success(self):
+    def test_send_success(self):
         adapter = _make_adapter()
         mock_session = self._mock_aiohttp_session(200)
 
@@ -502,7 +502,7 @@ class TestSendViaRestApi:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
-            result = await adapter.send("ha_events", "Test notification")
+            result = asyncio.run(adapter.send("ha_events", "Test notification"))
 
         assert result.success is True
         # Verify the REST API was called with correct payload
@@ -512,8 +512,7 @@ class TestSendViaRestApi:
         assert call_args[1]["json"]["message"] == "Test notification"
         assert "Bearer tok" in call_args[1]["headers"]["Authorization"]
 
-    @pytest.mark.asyncio
-    async def test_send_http_error(self):
+    def test_send_http_error(self):
         adapter = _make_adapter()
         mock_session = self._mock_aiohttp_session(401, "Unauthorized")
 
@@ -521,13 +520,12 @@ class TestSendViaRestApi:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
-            result = await adapter.send("ha_events", "Test")
+            result = asyncio.run(adapter.send("ha_events", "Test"))
 
         assert result.success is False
         assert "401" in result.error
 
-    @pytest.mark.asyncio
-    async def test_send_truncates_long_message(self):
+    def test_send_truncates_long_message(self):
         adapter = _make_adapter()
         mock_session = self._mock_aiohttp_session(200)
         long_message = "x" * 10000
@@ -536,13 +534,12 @@ class TestSendViaRestApi:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
-            await adapter.send("ha_events", long_message)
+            asyncio.run(adapter.send("ha_events", long_message))
 
         sent_message = mock_session.post.call_args[1]["json"]["message"]
         assert len(sent_message) == 4096
 
-    @pytest.mark.asyncio
-    async def test_send_does_not_use_websocket(self):
+    def test_send_does_not_use_websocket(self):
         """send() must use REST API, not the WS connection (race condition fix)."""
         adapter = _make_adapter()
         adapter._ws = AsyncMock()  # Simulate an active WS
@@ -552,7 +549,7 @@ class TestSendViaRestApi:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
-            await adapter.send("ha_events", "Test")
+            asyncio.run(adapter.send("ha_events", "Test"))
 
         # WS should NOT have been used for sending
         adapter._ws.send_json.assert_not_called()

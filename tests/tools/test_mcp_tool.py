@@ -357,8 +357,8 @@ class TestMCPServerTask:
         mock_cs_cm.__aexit__ = AsyncMock(return_value=False)
 
         return (
-            patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm),
-            patch("tools.mcp_tool.ClientSession", return_value=mock_cs_cm),
+            patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm, create=True),
+            patch("tools.mcp_tool.ClientSession", return_value=mock_cs_cm, create=True),
             mock_read, mock_write,
         )
 
@@ -376,7 +376,7 @@ class TestMCPServerTask:
         p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
 
         async def _test():
-            with patch("tools.mcp_tool.StdioServerParameters"), p_stdio, p_cs:
+            with patch("tools.mcp_tool.StdioServerParameters", create=True), p_stdio, p_cs:
                 server = MCPServerTask("test_srv")
                 await server.start({"command": "npx", "args": ["-y", "test"]})
 
@@ -414,7 +414,7 @@ class TestMCPServerTask:
         p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
 
         async def _test():
-            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
+            with patch("tools.mcp_tool.StdioServerParameters", create=True) as mock_params, \
                  p_stdio, p_cs, \
                  patch.dict("os.environ", {"PATH": "/usr/bin", "HOME": "/home/test"}, clear=False):
                 server = MCPServerTask("srv")
@@ -445,7 +445,7 @@ class TestMCPServerTask:
         p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
 
         async def _test():
-            with patch("tools.mcp_tool.StdioServerParameters"), p_stdio, p_cs:
+            with patch("tools.mcp_tool.StdioServerParameters", create=True), p_stdio, p_cs:
                 server = MCPServerTask("srv")
                 await server.start({"command": "npx"})
 
