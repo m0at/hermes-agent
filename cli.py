@@ -740,6 +740,8 @@ COMMANDS = {
     "/copycode": "Import Claude Code commands as Hermes skills",
     "/swarm": "Run parallel agent swarm on a complex task",
     "/context": "Show remaining context window (ASCII bar)",
+    "/jobs": "List background agent tasks",
+    "/fg": "Bring a background task to foreground (/fg <id>)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -1985,6 +1987,10 @@ class HermesCLI:
             self._show_context_gauge()
         elif cmd_lower.startswith("/swarm"):
             self._handle_swarm_command(cmd_original)
+        elif cmd_lower == "/jobs":
+            self._show_jobs()
+        elif cmd_lower.startswith("/fg"):
+            self._handle_fg_command(cmd_original)
         else:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             base_cmd = cmd_lower.split()[0]
@@ -2105,6 +2111,49 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
+    def _show_jobs(self):
+        """Show background agent tasks."""
+        import time as _time
+        if not self._background_jobs:
+            print("  No background jobs.")
+            return
+        for job in self._background_jobs:
+            done = job["done"].is_set()
+            elapsed = _time.time() - job["started"]
+            status = "done" if done else "running"
+            icon = "\u2705" if done else "\u23f3"
+            print(f"  {icon} [{job['id']}] {status} ({elapsed:.0f}s) \u2014 {job['prompt']}")
+
+    def _handle_fg_command(self, command: str):
+        """Bring a background job result to foreground."""
+        parts = command.split()
+        if len(parts) < 2:
+            if not self._background_jobs:
+                print("  No background jobs. Usage: /fg <id>")
+                return
+            job = self._background_jobs[-1]
+        else:
+            try:
+                job_id = int(parts[1])
+            except ValueError:
+                print(f"  Invalid job ID: {parts[1]}")
+                return
+            job = next((j for j in self._background_jobs if j["id"] == job_id), None)
+            if not job:
+                print(f"  Job {job_id} not found.")
+                return
+
+        if not job["done"].is_set():
+            print(f"  Job [{job['id']}] is still running. Use /jobs to check status.")
+            return
+
+        # Job is done — remove from list
+        self._background_jobs = [j for j in self._background_jobs if j["id"] != job["id"]]
+        if job["result"][0] and isinstance(job["result"][0], Exception):
+            print(f"  Job [{job['id']}] failed: {job['result'][0]}")
+        else:
+            print(f"  Job [{job['id']}] completed: {job['prompt']}")
 
     def _show_context_gauge(self):
         """Show ASCII context window gauge for the current model."""
@@ -2420,10 +2469,14 @@ metadata:
                 self.console.print("[yellow]Planner returned no tasks.[/]")
                 return
 
-            # Convert SwarmTask objects to dicts for add_plan()
+            # Convert SwarmTask objects to dicts for add_plan().
+            # Planner deps are task IDs; add_plan() resolves by *name*,
+            # so map IDs back to names.
+            id_to_name = {t.id: t.name for t in tasks}
             plan = [
                 {"name": t.name, "prompt": t.prompt, "role": t.role,
-                 "deps": [d for d in t.deps], "model": t.model or None}
+                 "deps": [id_to_name.get(d, d) for d in t.deps],
+                 "model": t.model or None}
                 for t in tasks
             ]
 
@@ -2437,7 +2490,7 @@ metadata:
             orch.add_plan(plan)
 
             self.console.print(f"[bold #DAA520]🐝 Swarm: executing {len(plan)} tasks...[/]")
-            summary = orch.run()
+            summary = orch.run_with_display(console=self.console)
 
             # Display results — summary shape: {"tasks": {state: count}, "total_tasks": N, ...}
             task_counts = summary.get("tasks", {})
@@ -2810,6 +2863,10 @@ metadata:
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        self._background_jobs = []  # list of {"id": int, "thread": Thread, "prompt": str, "started": float, "result": None}
+        self._next_job_id = 1
+        self._current_chat_thread = None  # reference to current chat thread for backgrounding
+        self._background_requested = False  # flag set by Ctrl+B handler
 
         # Clarify tool state: interactive question/answer with the user.
         # When the agent calls the clarify tool, _clarify_state is set and
@@ -3039,6 +3096,14 @@ metadata:
             self._should_exit = True
             event.app.exit()
 
+        @kb.add('c-b')
+        def handle_ctrl_b(event):
+            """Background the current agent task."""
+            if not self._agent_running:
+                return
+            self._background_requested = True
+            event.app.invalidate()
+
         from prompt_toolkit.keys import Keys
 
         @kb.add(Keys.BracketedPaste, eager=True)
@@ -3179,7 +3244,7 @@ metadata:
             if cli_ref._clarify_state:
                 return ""
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "type a message + Enter to interrupt, Ctrl+B to background, Ctrl+C to cancel"
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
@@ -3546,13 +3611,54 @@ metadata:
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._background_requested = False
                     app.invalidate()  # Refresh status line
 
-                    try:
-                        self.chat(user_input, images=submit_images or None)
-                    finally:
+                    import time as _bg_time
+
+                    # Run chat in a detachable thread
+                    chat_done = threading.Event()
+                    chat_result = [None]
+
+                    def _run_chat():
+                        try:
+                            self.chat(user_input, images=submit_images or None)
+                        except Exception as e:
+                            chat_result[0] = e
+                        finally:
+                            chat_done.set()
+
+                    chat_thread = threading.Thread(target=_run_chat, daemon=True, name="chat-fg")
+                    chat_thread.start()
+
+                    # Wait for completion OR background request
+                    while not chat_done.is_set():
+                        if self._background_requested:
+                            # Detach to background
+                            job_id = self._next_job_id
+                            self._next_job_id += 1
+                            job = {
+                                "id": job_id,
+                                "thread": chat_thread,
+                                "prompt": user_input[:80],
+                                "started": _bg_time.time(),
+                                "done": chat_done,
+                                "result": chat_result,
+                            }
+                            self._background_jobs.append(job)
+                            self._background_requested = False
+                            self._agent_running = False
+                            app.invalidate()
+                            _cprint(f"\n{_DIM}[{job_id}] Backgrounded: {user_input[:60]}...{_RST}")
+                            _cprint(f"{_DIM}Use /jobs to check status, /fg {job_id} to see result{_RST}")
+                            break
+                        chat_done.wait(timeout=0.1)
+                    else:
+                        # Chat completed normally (not backgrounded)
                         self._agent_running = False
                         app.invalidate()  # Refresh status line
+                        if chat_result[0] and isinstance(chat_result[0], Exception):
+                            print(f"Error: {chat_result[0]}")
                     
                 except Exception as e:
                     print(f"Error: {e}")

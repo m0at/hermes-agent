@@ -153,6 +153,132 @@ class SwarmOrchestrator:
 
         return self._build_summary()
 
+    def _build_live_table(self) -> "Table":
+        """Build a Rich Table showing current swarm status."""
+        from rich.table import Table
+        from rich.text import Text
+
+        table = Table(
+            title="🐝 Swarm",
+            show_header=True,
+            header_style="bold #DAA520",
+            border_style="dim",
+            expand=True,
+            padding=(0, 1),
+        )
+        table.add_column("Worker", style="bold", width=12)
+        table.add_column("Task", width=30)
+        table.add_column("Role", width=10)
+        table.add_column("Status", width=10)
+        table.add_column("Time", justify="right", width=8)
+
+        sched_status = self._scheduler.get_status()
+
+        # Show workers with their current tasks
+        for wid, worker in sorted(self._pool._workers.items()):
+            task_name = ""
+            role = ""
+            status_text = Text(worker.state.value)
+            elapsed = ""
+
+            if worker.current_task_id:
+                task = self._scheduler._tasks.get(worker.current_task_id)
+                if task:
+                    task_name = task.name[:28]
+                    role = task.role
+                    if task.started_at:
+                        secs = time.time() - task.started_at.timestamp()
+                        elapsed = f"{secs:.0f}s"
+
+            if worker.state.value == "busy":
+                status_text = Text("running", style="yellow")
+            elif worker.state.value == "idle":
+                status_text = Text("idle", style="dim")
+            elif worker.state.value == "dead":
+                status_text = Text("dead", style="red")
+
+            table.add_row(
+                worker.name[:10],
+                task_name,
+                role,
+                status_text,
+                elapsed,
+            )
+
+        # Summary row
+        completed = sched_status.get("completed", 0)
+        failed = sched_status.get("failed", 0)
+        pending = sched_status.get("pending", 0)
+        running = sched_status.get("running", 0)
+        total = sum(sched_status.values())
+
+        table.add_section()
+        summary = f"✅ {completed}  ⏳ {running}  📋 {pending}  ❌ {failed}  / {total} total"
+        table.add_row("", Text(summary, style="dim"), "", "", "")
+
+        return table
+
+    def run_with_display(self, console=None, max_turns: int = 1000, poll_interval: float = 0.5) -> dict:
+        """Run the swarm with a live Rich display."""
+        from rich.live import Live
+
+        if console is None:
+            from rich.console import Console
+            console = Console()
+
+        self._cancelled.clear()
+        self._ensure_workers()
+
+        with Live(self._build_live_table(), console=console, refresh_per_second=4) as live:
+            turn = 0
+            while turn < max_turns and not self._cancelled.is_set():
+                if self._scheduler.is_complete():
+                    live.update(self._build_live_table())
+                    break
+
+                ready = self._scheduler.get_ready_tasks()
+                dispatched = 0
+
+                for task in ready:
+                    if self._cancelled.is_set():
+                        break
+
+                    worker = self._pool.get_available_worker()
+                    if worker is None:
+                        break
+
+                    if not task.model:
+                        task.model = self._router.select_model(task.role)
+
+                    self._scheduler.mark_running(task.id, worker.id)
+                    self._log_event(
+                        "task_dispatched",
+                        task_id=task.id,
+                        worker_id=worker.id,
+                        model=task.model,
+                    )
+
+                    self._dispatch_task(task, worker)
+                    dispatched += 1
+
+                self._collect_results()
+                live.update(self._build_live_table())
+
+                if dispatched == 0 and not self._has_running_tasks():
+                    if self._scheduler.is_complete():
+                        break
+                    time.sleep(poll_interval)
+
+                turn += 1
+                if dispatched == 0:
+                    time.sleep(poll_interval)
+
+            self._drain_running(timeout=self._config.timeout_seconds)
+            self._collect_results()
+            live.update(self._build_live_table())
+
+        return self._build_summary()
+
     def run_async(self) -> Future:
         future: Future = Future()
 

@@ -32,6 +32,8 @@ COMMANDS = {
     "/compress": "Manually compress conversation context (flush memories + summarize)",
     "/usage": "Show token usage for the current session",
     "/context": "Show remaining context window (ASCII bar)",
+    "/jobs": "List background agent tasks",
+    "/fg": "Bring a background task to foreground (/fg <id>)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

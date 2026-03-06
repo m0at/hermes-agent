@@ -775,3 +775,36 @@ class TestOrchestrator:
             orch.add_task(f"task_{i}", f"do {i}")
         summary = orch.run(max_turns=200)
         assert summary["total_tasks"] == 4
+
+    def test_run_with_display(self):
+        """Live display mode runs without crashing."""
+        from swarm.orchestrator import SwarmOrchestrator
+        from rich.console import Console
+        import io
+        orch = SwarmOrchestrator(SwarmConfig(max_workers=2))
+        orch.add_task("hello", "say hello")
+        console = Console(file=io.StringIO(), force_terminal=True)
+        summary = orch.run_with_display(console=console, max_turns=50)
+        assert "tasks" in summary
+
+    def test_run_with_display_parallel(self):
+        """Live display with multiple parallel tasks."""
+        from swarm.orchestrator import SwarmOrchestrator
+        from rich.console import Console
+        import io
+        orch = SwarmOrchestrator(SwarmConfig(max_workers=4))
+        for i in range(3):
+            orch.add_task(f"task_{i}", f"do {i}")
+        console = Console(file=io.StringIO(), force_terminal=True)
+        summary = orch.run_with_display(console=console, max_turns=200)
+        assert summary["total_tasks"] == 3
+
+    def test_build_live_table(self):
+        """Live table builds without error."""
+        from swarm.orchestrator import SwarmOrchestrator
+        orch = SwarmOrchestrator(SwarmConfig(max_workers=2))
+        orch.add_task("test", "do test")
+        orch._ensure_workers()
+        table = orch._build_live_table()
+        assert table is not None
+        assert table.title == "🐝 Swarm"
