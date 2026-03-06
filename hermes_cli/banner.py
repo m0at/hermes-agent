@@ -123,11 +123,23 @@ def get_available_skills() -> Dict[str, List[str]]:
 # Welcome banner
 # =========================================================================
 
+def _format_context_length(tokens: int) -> str:
+    """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
+    if tokens >= 1_000_000:
+        val = tokens / 1_000_000
+        return f"{val:g}M"
+    elif tokens >= 1_000:
+        val = tokens / 1_000
+        return f"{val:g}K"
+    return str(tokens)
+
+
 def build_welcome_banner(console: Console, model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
-                         get_toolset_for_tool=None):
+                         get_toolset_for_tool=None,
+                         context_length: int = None):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -138,6 +150,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         enabled_toolsets: List of enabled toolset names.
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
+        context_length: Model's context window size in tokens.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     if get_toolset_for_tool is None:
@@ -163,7 +176,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     model_short = model.split("/")[-1] if "/" in model else model
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
-    left_lines.append(f"[{c_sec}]{model_short}[/] [dim {c_dim}]·[/] [dim {c_dim}]Nous Research[/]")
+    ctx_str = f" [dim {c_dim}]·[/] [dim {c_dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+    left_lines.append(f"[{c_sec}]{model_short}[/]{ctx_str} [dim {c_dim}]·[/] [dim {c_dim}]Nous Research[/]")
     left_lines.append(f"[dim {c_dim}]{cwd}[/]")
     if session_id:
         left_lines.append(f"[dim #8B8682]Session: {session_id}[/]")
