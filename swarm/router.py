@@ -291,9 +291,8 @@ class ModelRouter:
 
         if not candidates:
             raise BudgetExceededError(
-                budget_limit=self._budget_limit,
-                current_spend=self._total_spend,
-                estimated_cost=0,
+                spent=self._total_spend,
+                limit=self._budget_limit,
             )
 
         return candidates[0]
