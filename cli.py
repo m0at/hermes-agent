@@ -3130,6 +3130,13 @@ metadata:
                     self._should_exit = True
                     event.app.exit()
         
+        @kb.add('escape', eager=True)
+        def handle_escape(event):
+            """Escape key interrupts the running agent."""
+            if self._agent_running and self.agent:
+                print("\n⚡ Interrupting agent...")
+                self.agent.interrupt()
+
         @kb.add('c-d')
         def handle_ctrl_d(event):
             """Handle Ctrl+D - exit."""
@@ -3618,6 +3625,12 @@ metadata:
                             self._should_exit = True
                             if app.is_running:
                                 app.exit()
+                        continue
+
+                    # Bare model alias detection (e.g. just typing "haiku")
+                    _MODEL_SHORTCUT_NAMES = {"opus", "sonnet", "haiku", "qwen"}
+                    if isinstance(user_input, str) and user_input.strip().lower() in _MODEL_SHORTCUT_NAMES:
+                        self.process_command(f"/model {user_input.strip()}")
                         continue
 
                     # Expand paste references back to full content
