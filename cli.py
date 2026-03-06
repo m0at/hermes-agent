@@ -722,6 +722,7 @@ COMMANDS = {
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
     "/reload-mcp": "Reload MCP servers from config.yaml",
+    "/copycode": "Import Claude Code commands as Hermes skills",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -1890,6 +1891,8 @@ class HermesCLI:
             self._show_usage()
         elif cmd_lower == "/reload-mcp":
             self._reload_mcp()
+        elif cmd_lower == "/copycode":
+            self._copycode()
         else:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             base_cmd = cmd_lower.split()[0]
@@ -2095,6 +2098,93 @@ class HermesCLI:
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+
+    def _copycode(self):
+        """Import Claude Code commands/skills into Hermes skills directory."""
+        import shutil
+        import re
+
+        claude_dirs = [
+            Path.home() / ".claude" / "commands",
+            Path.home() / ".claude" / "plugins" / "marketplaces",
+        ]
+
+        # Find all .md command files from Claude Code
+        found = []
+        for d in claude_dirs:
+            if d.exists():
+                for md in d.rglob("*.md"):
+                    if "commands" in str(md.parent) or "commands" in md.parts:
+                        found.append(md)
+
+        if not found:
+            print("No Claude Code commands found in ~/.claude/")
+            return
+
+        skills_dir = Path.home() / ".hermes" / "skills" / "imported-from-claude"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+        imported = 0
+        skipped = 0
+        for src in found:
+            # Derive skill name from filename
+            name = src.stem  # e.g. "commit", "code-review"
+
+            # Read source
+            content = src.read_text(encoding="utf-8")
+
+            # Parse existing frontmatter
+            fm_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+            if fm_match:
+                fm_text = fm_match.group(1)
+                body = content[fm_match.end():]
+                # Extract description
+                desc_match = re.search(r'^description:\s*(.+)$', fm_text, re.MULTILINE)
+                desc = desc_match.group(1).strip() if desc_match else f"Imported from Claude Code: {name}"
+            else:
+                fm_text = ""
+                body = content
+                desc = f"Imported from Claude Code: {name}"
+
+            # Build Hermes SKILL.md
+            # Figure out source plugin name for attribution
+            parts = src.parts
+            plugin_name = name
+            if "plugins" in parts:
+                idx = parts.index("plugins")
+                if idx + 1 < len(parts):
+                    plugin_name = parts[idx + 1]
+
+            skill_dir = skills_dir / name
+            skill_file = skill_dir / "SKILL.md"
+
+            if skill_file.exists():
+                skipped += 1
+                continue
+
+            skill_dir.mkdir(parents=True, exist_ok=True)
+
+            hermes_skill = f"""---
+name: {name}
+description: {desc}
+version: 1.0.0
+author: Imported from Claude Code ({plugin_name})
+license: MIT
+metadata:
+  hermes:
+    tags: [imported, claude-code]
+    source: {src}
+---
+
+{body}"""
+
+            skill_file.write_text(hermes_skill, encoding="utf-8")
+            imported += 1
+            print(f"  + {name}")
+
+        print(f"\nImported {imported} skill(s) to {skills_dir}")
+        if skipped:
+            print(f"  ({skipped} already existed, skipped)")
 
     def _clarify_callback(self, question, choices):
         """
@@ -2745,12 +2835,20 @@ class HermesCLI:
             except Exception:
                 return ""
 
+        _paste_log = Path.home() / ".hermes" / "paste_debug.log"
+        def _plog(msg):
+            with open(_paste_log, "a") as f:
+                f.write(f"[{datetime.now().isoformat()}] {msg}\n")
+
         def _do_paste_image(event):
             """Check clipboard for image, attach if found."""
+            _plog("_do_paste_image called")
             img_path = _save_clipboard_image()
+            _plog(f"  _save_clipboard_image -> {img_path}")
             if img_path:
                 self._attached_images.append(img_path)
                 event.app.invalidate()
+                _plog(f"  attached! total={len(self._attached_images)}")
                 return True
             return False
 
@@ -2760,9 +2858,8 @@ class HermesCLI:
         def handle_bracketed_paste(event):
             """Cmd+V / terminal paste — handles text AND clipboard images."""
             pasted_text = event.data or ""
-            # Always check for clipboard image on any paste event
+            _plog(f"BracketedPaste fired! data={repr(pasted_text[:100])}")
             _do_paste_image(event)
-            # Insert the pasted text into the buffer
             if pasted_text:
                 event.current_buffer.insert_text(pasted_text)
             event.app.invalidate()
