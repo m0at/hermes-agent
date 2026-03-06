@@ -1,39 +1,58 @@
 # Swarm Implementation Tracker
 
-Master board for all swarm work. Each section tracks status.
+## P1 Bug Fixes
 
-## P1 Bug Fixes (Prerequisites)
+| # | Task | Status |
+|---|------|--------|
+| B1 | Lazy import firecrawl | DONE |
+| B2 | SQLite session double-write dedup | DONE |
+| B3 | Background job cleanup safety | DONE |
+| B4 | Trajectory nudge pollution | DONE |
+| B5 | Delegate stdout/stderr isolation | DONE |
 
-| # | Task | Status | Notes |
-|---|------|--------|-------|
-| B1 | Lazy import firecrawl in web_tools.py | DONE | Moved import into _get_firecrawl_client() |
-| B2 | SQLite session double-write dedup | DONE | Added _session_db_flushed counter |
-| B3 | Background job cleanup safety | DONE | cleanup_vm checks active processes before teardown |
-| B4 | Nudge text in training trajectories | DONE | Use original_user_message in _save_trajectory |
-| B5 | Delegate tool stdout/stderr isolation | DONE | Thread-local stream wrapper, no more global redirect |
+## Swarm Core
 
-## Swarm Core Infrastructure
+| # | Module | Status | File |
+|---|--------|--------|------|
+| S1 | Core types + exceptions | DONE | types.py, exceptions.py |
+| S2 | DAG task scheduler | DONE | scheduler.py |
+| S3 | Worker pool manager | DONE | worker.py |
+| S4 | Artifact bus | DONE | artifacts.py |
+| S5 | Model router (multi-provider) | DONE | router.py |
+| S6 | Agent messaging bus | DONE | messaging.py |
+| S7 | Git worktree orchestration | DONE | worktree.py |
+| S8 | Telemetry + monitor | DONE | monitor.py |
+| S9 | Agent roles | DONE | roles.py |
+| S10 | Semantic conflict resolver | DONE | merge.py |
+| S11 | Orchestrator (main loop) | DONE | orchestrator.py |
+| S12 | Task decomposition planner | DONE | planner.py |
+| S13 | Verifier framework | DONE | verifier.py |
+| I1 | CLI /swarm command | DONE | cli.py |
+| I2 | Modal worker backend | DONE | backends/modal_backend.py |
+| I3 | Human approval gates | DONE | approval.py |
 
-| # | Task | Status | File | Notes |
-|---|------|--------|------|-------|
-| S1 | Core types + exceptions | DONE | types.py, exceptions.py | TaskState, WorkerState, SwarmTask, SwarmWorker, SwarmConfig, SwarmResult, ArtifactRef |
-| S2 | DAG task scheduler | DONE | scheduler.py | Thread-safe, deps, retries, cancel_downstream, checkpoint |
-| S3 | Worker pool manager | DONE | worker.py | Local/Modal/SSH backends, scale up/down, assign/release |
-| S4 | Artifact bus | DONE | artifacts.py | SHA-256 provenance, store/get/export manifest |
-| S5 | Model router | DONE | router.py | Budget-aware, role-based, cost tracking |
-| S9 | Agent roles | DONE | roles.py | Planner, Executor, Critic, Verifier, Merger, Researcher |
+## Provider Support (in router.py)
 
-## Swarm — Next Wave
+| Provider | Key Source | Models |
+|----------|-----------|--------|
+| Anthropic | `ANTHROPIC_API_KEY` | claude-opus-4, claude-sonnet-4, claude-haiku-4 |
+| OpenAI | `OPENAI_API_KEY` | gpt-4o, gpt-4o-mini, o3, o3-mini |
+| OpenRouter | `OPENROUTER_API_KEY` | gemini-2.5-flash, gemini-2.5-pro, + any |
+| Local | auto | local/qwen3.5-9b (multi-instance on Apple Silicon) |
+| Remote GPU | Lambda/AWS | qwen3.5-9b-remote |
 
-| # | Task | Status | Notes |
-|---|------|--------|-------|
-| S6 | Agent-to-agent messaging bus | PENDING | |
-| S7 | Git worktree orchestration | PENDING | Branch-per-agent |
-| S8 | Telemetry + dashboard | PENDING | Cost, tokens, failures |
-| S10 | Semantic conflict resolver | PENDING | Multi-agent file edits |
-| I1 | CLI /swarm command | PENDING | Launch, status, cancel |
-| I2 | Modal worker backend (real) | PENDING | First cloud backend |
-| I3 | Human approval gates | PENDING | Risk-tier based |
-| S11 | Swarm orchestrator (main loop) | PENDING | Ties scheduler + workers + router together |
-| S12 | Task decomposition (planner) | PENDING | Auto-split plans into parallel tasks |
-| S13 | Verifier agents | PENDING | Score patches/results before merge |
+Model allowlists: `SWARM_ANTHROPIC_MODELS`, `SWARM_OPENAI_MODELS`, `SWARM_OPENROUTER_MODELS`
+Local scaling: `SWARM_LOCAL_MAX_CONCURRENT` (default: 2)
+
+## Next Wave
+
+| # | Task | Status |
+|---|------|--------|
+| N1 | Wire /swarm into cli.py COMMANDS dict | PENDING |
+| N2 | Real AIAgent execution in orchestrator._execute_task | PENDING |
+| N3 | Lambda Labs / AWS remote GPU backend | PENDING |
+| N4 | Retrieval index over code + artifacts | PENDING |
+| N5 | RL data pipeline from swarm traces | PENDING |
+| N6 | Checkpoint/resume for subtree state | PENDING |
+| N7 | Distributed browser pool | PENDING |
+| N8 | Watch agents (logs, CI, deploys) | PENDING |
