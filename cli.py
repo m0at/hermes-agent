@@ -146,7 +146,7 @@ def load_cli_config() -> Dict[str, Any]:
     # Default configuration
     defaults = {
         "model": {
-            "default": "local/qwen3.5-9b",
+            "default": "claude-haiku-4-5",
             "base_url": OPENROUTER_BASE_URL,
             "provider": "auto",
         },
@@ -896,8 +896,8 @@ class HermesCLI:
         _inferred_provider = None
         if self.model.startswith("local/"):
             _inferred_provider = "local"
-        elif self.model.startswith("anthropic/"):
-            _inferred_provider = "auto"  # let resolver pick openrouter/nous
+        elif self.model.startswith("claude") or self.model.startswith("anthropic/"):
+            _inferred_provider = "anthropic"
         elif self.model.startswith("openai/"):
             _inferred_provider = "auto"
         self.requested_provider = (
