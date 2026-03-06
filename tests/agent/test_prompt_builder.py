@@ -171,7 +171,9 @@ class TestBuildSkillsSystemPrompt:
 # =========================================================================
 
 class TestBuildContextFilesPrompt:
-    def test_empty_dir_returns_empty(self, tmp_path):
+    def test_empty_dir_returns_empty(self, tmp_path, monkeypatch):
+        # Prevent ~/.hermes/SOUL.md fallback from bleeding into the test
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "_fakehome")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
 
