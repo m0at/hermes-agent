@@ -2745,19 +2745,24 @@ class HermesCLI:
             except Exception:
                 return ""
 
+        def _do_paste_image(event):
+            """Check clipboard for image, attach if found."""
+            img_path = _save_clipboard_image()
+            if img_path:
+                self._attached_images.append(img_path)
+                event.app.invalidate()
+                return True
+            return False
+
         @kb.add('c-v', eager=True, filter=Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
         ))
         def handle_paste(event):
             """Ctrl+V — paste from clipboard: text and/or image."""
-            img_path = _save_clipboard_image()
-            if img_path:
-                self._attached_images.append(img_path)
-
+            _do_paste_image(event)
             text = _get_clipboard_text()
             if text:
                 event.current_buffer.insert_text(text)
-
             event.app.invalidate()
 
         @kb.add('escape', 'v', eager=True, filter=Condition(
@@ -2766,6 +2771,15 @@ class HermesCLI:
         def handle_alt_v_paste(event):
             """Alt+V — fallback paste for terminals that remap Ctrl+V."""
             handle_paste(event)
+
+        @kb.add('c-p', eager=True, filter=Condition(
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
+        ))
+        def handle_paste_image(event):
+            """Ctrl+P — paste image from clipboard."""
+            if not _do_paste_image(event):
+                # No image found, show hint
+                pass
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -2880,7 +2894,7 @@ class HermesCLI:
                 return ""
             if cli_ref._agent_running:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
-            return ""
+            return "Ctrl+P to paste image"
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
 
