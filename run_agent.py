@@ -117,7 +117,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
-        model: str = "local/qwen3.5-9b",  # OpenRouter format
+        model: str = "claude-haiku-4-5",
         max_iterations: int = 60,  # Default tool-calling iterations
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
