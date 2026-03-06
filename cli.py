@@ -2366,7 +2366,7 @@ metadata:
         _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
         return "deny"
 
-    def chat(self, message: str) -> Optional[str]:
+    def chat(self, message) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -2773,84 +2773,112 @@ metadata:
             self._should_exit = True
             event.app.exit()
 
+        # Subprocess script for clipboard image extraction on macOS.
+        # MUST run in a separate process because prompt_toolkit's asyncio
+        # event loop prevents AppKit's CFRunLoop/XPC from functioning
+        # in-process (NSPasteboard silently returns nil).
+        _MACOS_CLIP_SCRIPT = r'''
+import sys, os
+try:
+    from AppKit import NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF
+    from AppKit import NSBitmapImageRep, NSPNGFileType
+    dest = sys.argv[1]
+    pb = NSPasteboard.generalPasteboard()
+    png = pb.dataForType_(NSPasteboardTypePNG)
+    if png:
+        png.writeToFile_atomically_(dest, True)
+        sys.exit(0)
+    tiff = pb.dataForType_(NSPasteboardTypeTIFF)
+    if tiff:
+        rep = NSBitmapImageRep.imageRepWithData_(tiff)
+        if rep:
+            out = rep.representationUsingType_properties_(NSPNGFileType, {})
+            if out:
+                out.writeToFile_atomically_(dest, True)
+                sys.exit(0)
+    sys.exit(1)
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+'''
+
         def _save_clipboard_image():
             """Save clipboard image to disk if present. Returns Path or None."""
             import subprocess as _sp
             import sys as _sys
 
+            img_dir = Path.home() / ".hermes" / "images"
+            img_dir.mkdir(parents=True, exist_ok=True)
+            self._image_counter += 1
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
+
             if _sys.platform == "darwin":
-                img_dir = Path.home() / ".hermes" / "images"
-                img_dir.mkdir(parents=True, exist_ok=True)
-                self._image_counter += 1
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
-
-                # Try AppKit (PyObjC) first — most reliable
+                # Method 1: pngpaste (brew install pngpaste) — fastest
                 try:
-                    from AppKit import NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF
-                    from AppKit import NSBitmapImageRep, NSPNGFileType
-                    pb = NSPasteboard.generalPasteboard()
-                    png_data = pb.dataForType_(NSPasteboardTypePNG)
-                    if png_data:
-                        png_data.writeToFile_atomically_(str(img_path), True)
-                        if img_path.exists() and img_path.stat().st_size > 0:
-                            return img_path
-                    tiff_data = pb.dataForType_(NSPasteboardTypeTIFF)
-                    if tiff_data:
-                        rep = NSBitmapImageRep.imageRepWithData_(tiff_data)
-                        if rep:
-                            out = rep.representationUsingType_properties_(NSPNGFileType, {})
-                            if out:
-                                out.writeToFile_atomically_(str(img_path), True)
-                                if img_path.exists() and img_path.stat().st_size > 0:
-                                    return img_path
-                except ImportError:
-                    pass  # PyObjC not available, fall through
-                except Exception:
+                    r = _sp.run(["pngpaste", str(img_path)],
+                                capture_output=True, timeout=3)
+                    if r.returncode == 0 and img_path.exists() and img_path.stat().st_size > 0:
+                        _plog(f"  pngpaste succeeded: {img_path}")
+                        return img_path
+                except FileNotFoundError:
                     pass
+                except Exception as e:
+                    _plog(f"  pngpaste error: {e}")
 
-                # Fallback: osascript
+                # Method 2: PyObjC in subprocess (avoids asyncio/CFRunLoop conflict)
+                try:
+                    r = _sp.run(
+                        [_sys.executable, "-c", _MACOS_CLIP_SCRIPT, str(img_path)],
+                        capture_output=True, timeout=5,
+                    )
+                    _plog(f"  pyobjc subprocess: rc={r.returncode} stderr={r.stderr.decode(errors='replace').strip()}")
+                    if r.returncode == 0 and img_path.exists() and img_path.stat().st_size > 0:
+                        _plog(f"  pyobjc subprocess succeeded: {img_path}")
+                        return img_path
+                except Exception as e:
+                    _plog(f"  pyobjc subprocess error: {e}")
+
+                # Method 3: osascript fallback
                 try:
                     info = _sp.run(
-                        ["osascript", "-e", "the clipboard info"],
-                        capture_output=True, text=True, timeout=2,
+                        ["osascript", "-e", "clipboard info"],
+                        capture_output=True, text=True, timeout=3,
                     )
-                    if "«class PNGf»" not in info.stdout and "«class TIFF»" not in info.stdout:
-                        self._image_counter -= 1
-                        return None
-                    _sp.run(
-                        ["osascript", "-e",
-                         f'set f to POSIX file "{img_path}" as text\n'
-                         f'tell application "System Events" to write (the clipboard as «class PNGf») to (open for access file f with write permission)\n'
-                         f'tell application "System Events" to close access file f'],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if img_path.exists() and img_path.stat().st_size > 0:
-                        return img_path
-                except Exception:
-                    pass
+                    _plog(f"  osascript clipboard info: {info.stdout.strip()}")
+                    if "«class PNGf»" in info.stdout or "«class TIFF»" in info.stdout:
+                        _sp.run(
+                            ["osascript", "-e",
+                             'try\n'
+                             f'  set imgData to the clipboard as «class PNGf»\n'
+                             f'  set f to open for access POSIX file "{img_path}" with write permission\n'
+                             f'  write imgData to f\n'
+                             f'  close access f\n'
+                             f'on error\n'
+                             f'  try\n'
+                             f'    close access POSIX file "{img_path}"\n'
+                             f'  end try\n'
+                             f'end try'],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if img_path.exists() and img_path.stat().st_size > 0:
+                            _plog(f"  osascript succeeded: {img_path}")
+                            return img_path
+                except Exception as e:
+                    _plog(f"  osascript error: {e}")
 
                 self._image_counter -= 1
                 return None
             else:
-                # Linux/Windows: try xclip for image
+                # Linux: xclip
                 try:
                     targets = _sp.run(
                         ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
                         capture_output=True, text=True, timeout=2,
                     )
                     if "image/png" not in targets.stdout:
+                        self._image_counter -= 1
                         return None
-                except Exception:
-                    return None
-
-                img_dir = Path.home() / ".hermes" / "images"
-                img_dir.mkdir(parents=True, exist_ok=True)
-                self._image_counter += 1
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
-
-                try:
                     data = _sp.run(
                         ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
                         capture_output=True, timeout=5,
@@ -2860,7 +2888,8 @@ metadata:
                         return img_path
                 except Exception:
                     pass
-            return None
+                self._image_counter -= 1
+                return None
 
         def _get_clipboard_text():
             """Get text from system clipboard."""

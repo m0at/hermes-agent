@@ -2856,7 +2856,11 @@ class AIAgent:
 
         # Periodic memory nudge: remind the model to consider saving memories.
         # Counter resets whenever the memory tool is actually used.
-        if (self._memory_nudge_interval > 0
+        # user_message may be a list (multipart content with images) — only
+        # append nudge text when it's a plain string.
+        _msg_is_str = isinstance(user_message, str)
+        if (_msg_is_str
+                and self._memory_nudge_interval > 0
                 and "memory" in self.valid_tool_names
                 and self._memory_store):
             self._turns_since_memory += 1
@@ -2869,7 +2873,8 @@ class AIAgent:
 
         # Skill creation nudge: fires on the first user message after a long tool loop.
         # The counter increments per API iteration in the tool loop and is checked here.
-        if (self._skill_nudge_interval > 0
+        if (_msg_is_str
+                and self._skill_nudge_interval > 0
                 and self._iters_since_skill >= self._skill_nudge_interval
                 and "skill_manage" in self.valid_tool_names):
             user_message += (
@@ -2882,7 +2887,8 @@ class AIAgent:
         self._honcho_context = ""
         if self._honcho and self._honcho_session_key:
             try:
-                self._honcho_context = self._honcho_prefetch(user_message)
+                _prefetch_text = user_message if _msg_is_str else str(user_message)
+                self._honcho_context = self._honcho_prefetch(_prefetch_text)
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
@@ -2892,7 +2898,12 @@ class AIAgent:
         self._log_msg_to_db(user_msg)
         
         if not self.quiet_mode:
-            print(f"› Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            if _msg_is_str:
+                print(f"› Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            else:
+                _txt = next((p.get("text", "") for p in user_message if isinstance(p, dict) and p.get("type") == "text"), "")
+                _n_img = sum(1 for p in user_message if isinstance(p, dict) and p.get("type") == "image_url")
+                print(f"› Starting conversation: '{_txt[:50]}' + {_n_img} image{'s' if _n_img != 1 else ''}")
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
