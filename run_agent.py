@@ -3937,6 +3937,48 @@ class AIAgent:
                     if hasattr(self, '_empty_content_retries'):
                         self._empty_content_retries = 0
 
+                    # Detect premature quit: the model gave up on a task and
+                    # emitted text instead of continuing with tool calls.
+                    # Signs: short response mentioning failure/inability,
+                    # and the conversation has tool errors in recent messages.
+                    if (
+                        self.api_mode != "codex_responses"
+                        and self.tools
+                        and api_call_count > 1
+                        and len(final_response) < 300
+                    ):
+                        _quit_phrases = [
+                            "read-only", "permission denied", "cannot ",
+                            "let me try", "try a different", "instead",
+                            "i'll create", "unable to", "failed",
+                        ]
+                        _resp_lower = final_response.lower()
+                        _looks_like_quit = any(p in _resp_lower for p in _quit_phrases)
+
+                        if not hasattr(self, '_premature_quit_nudges'):
+                            self._premature_quit_nudges = 0
+
+                        if _looks_like_quit and self._premature_quit_nudges < 2:
+                            self._premature_quit_nudges += 1
+                            # Keep the model's message in history so it has context
+                            interim = self._build_assistant_message(assistant_message, finish_reason)
+                            messages.append(interim)
+                            self._log_msg_to_db(interim)
+                            nudge = {
+                                "role": "user",
+                                "content": (
+                                    "Don't give up — keep going. Try the current working "
+                                    "directory or ~/. Use your tools to complete the task."
+                                ),
+                            }
+                            messages.append(nudge)
+                            self._log_msg_to_db(nudge)
+                            if not self.quiet_mode:
+                                print(f"{self.log_prefix}› Model appeared to give up, nudging to continue ({self._premature_quit_nudges}/2)...")
+                            continue
+                        elif not _looks_like_quit:
+                            self._premature_quit_nudges = 0
+
                     if (
                         self.api_mode == "codex_responses"
                         and self.valid_tool_names
