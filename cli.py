@@ -2750,17 +2750,22 @@ class HermesCLI:
         ))
         def handle_paste(event):
             """Ctrl+V — paste from clipboard: text and/or image."""
-            # Check for image in clipboard
             img_path = _save_clipboard_image()
             if img_path:
                 self._attached_images.append(img_path)
 
-            # Also paste any text content
             text = _get_clipboard_text()
             if text:
                 event.current_buffer.insert_text(text)
 
             event.app.invalidate()
+
+        @kb.add('escape', 'v', eager=True, filter=Condition(
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
+        ))
+        def handle_alt_v_paste(event):
+            """Alt+V — fallback paste for terminals that remap Ctrl+V."""
+            handle_paste(event)
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
