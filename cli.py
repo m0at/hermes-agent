@@ -877,8 +877,8 @@ class HermesCLI:
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
-        # Whether to show <think> blocks in model responses
-        self.show_thinking = CLI_CONFIG["display"].get("show_thinking", True)
+        # Whether to show <think> blocks in model responses (default: off)
+        self.show_thinking = CLI_CONFIG["display"].get("show_thinking", False)
         
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
@@ -2578,7 +2578,11 @@ metadata:
                     styled_response = _format_think_blocks(response)
                 else:
                     import re as _re
-                    styled_response = _re.sub(r'<think>.*?</think>\s*', '', response, flags=_re.DOTALL).strip()
+                    # Strip closed think blocks
+                    styled_response = _re.sub(r'<think>.*?</think>\s*', '', response, flags=_re.DOTALL)
+                    # Strip unclosed think blocks (model ran out of tokens mid-think)
+                    styled_response = _re.sub(r'<think>.*', '', styled_response, flags=_re.DOTALL)
+                    styled_response = styled_response.strip()
 
                 # Render box + response as a single _cprint call so
                 # nothing can interleave between the box borders.
