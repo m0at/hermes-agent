@@ -106,6 +106,14 @@ SKILLS_GUIDANCE = (
     "skill with skill_manage so you can reuse it next time."
 )
 
+LOCAL_MODEL_TOOL_GUIDANCE = (
+    "CRITICAL: You MUST use your tools to complete tasks. Do NOT just describe "
+    "what you would do — actually call the tools. Do NOT give up after one error. "
+    "If a tool call fails, try a different approach. Keep going until the task is "
+    "fully complete. Never end your turn with a plan — always end with either a "
+    "tool call or a final result after having used tools."
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
