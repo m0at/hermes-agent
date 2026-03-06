@@ -2983,9 +2983,7 @@ metadata:
             # Heuristic: a real paste adds many characters at once
             if chars_added > 1 and not text.startswith('/'):
                 # Check if clipboard also has an image (Cmd+V / middle-click paste)
-                img_path = _save_clipboard_image()
-                if img_path:
-                    self._attached_images.append(img_path)
+                if self._try_attach_clipboard_image():
                     if self._app:
                         self._app.invalidate()
                 if line_count >= 5:
