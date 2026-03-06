@@ -14,6 +14,7 @@ Usage:
 
 import logging
 import os
+import shutil
 import sys
 import json
 import atexit
@@ -537,7 +538,18 @@ def _get_available_skills() -> Dict[str, List[str]]:
     return skills_by_category
 
 
-def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None):
+def _format_context_length(tokens: int) -> str:
+    """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
+    if tokens >= 1_000_000:
+        val = tokens / 1_000_000
+        return f"{val:g}M"
+    elif tokens >= 1_000:
+        val = tokens / 1_000
+        return f"{val:g}K"
+    return str(tokens)
+
+
+def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None, context_length: int = None):
     """
     Build and print a Claude Code-style welcome banner with caduceus on left and info on right.
     
@@ -548,6 +560,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         tools: List of tool definitions
         enabled_toolsets: List of enabled toolset names
         session_id: Unique session identifier for logging
+        context_length: Model's context window size in tokens
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     
@@ -573,7 +586,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
     
-    left_lines.append(f"[#FFBF00]{model_short}[/] [dim #B8860B]·[/] [dim #B8860B]Nous Research[/]")
+    ctx_str = f" [dim #B8860B]·[/] [dim #B8860B]{_format_context_length(context_length)} context[/]" if context_length else ""
+    left_lines.append(f"[#FFBF00]{model_short}[/]{ctx_str} [dim #B8860B]·[/] [dim #B8860B]Nous Research[/]")
     left_lines.append(f"[dim #B8860B]{cwd}[/]")
     
     # Add session ID if provided
@@ -721,6 +735,7 @@ COMMANDS = {
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
+    "/paste": "Check clipboard for an image and attach it",
     "/reload-mcp": "Reload MCP servers from config.yaml",
     "/copycode": "Import Claude Code commands as Hermes skills",
     "/quit": "Exit the CLI (also: /exit, /q)",
@@ -1117,6 +1132,11 @@ class HermesCLI:
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
             
+            # Get context length for display
+            ctx_len = None
+            if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
+                ctx_len = self.agent.context_compressor.context_length
+            
             # Build and display the banner
             build_welcome_banner(
                 console=self.console,
@@ -1125,6 +1145,7 @@ class HermesCLI:
                 tools=tools,
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
+                context_length=ctx_len,
             )
         
         # Show tool availability warnings if any tools are disabled
@@ -1132,6 +1153,69 @@ class HermesCLI:
         
         self.console.print()
     
+    def _try_attach_clipboard_image(self) -> bool:
+        """Check clipboard for an image and attach it if found.
+
+        Saves the image to ~/.hermes/images/ and appends the path to
+        ``_attached_images``.  Returns True if an image was attached.
+        """
+        from hermes_cli.clipboard import save_clipboard_image
+
+        img_dir = Path.home() / ".hermes" / "images"
+        self._image_counter += 1
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
+
+        if save_clipboard_image(img_path):
+            self._attached_images.append(img_path)
+            return True
+        self._image_counter -= 1
+        return False
+
+    def _handle_paste_command(self):
+        """Handle /paste — explicitly check clipboard for an image.
+
+        This is the reliable fallback for terminals where BracketedPaste
+        doesn't fire for image-only clipboard content (e.g., VSCode terminal,
+        Windows Terminal with WSL2).
+        """
+        from hermes_cli.clipboard import has_clipboard_image
+        if has_clipboard_image():
+            if self._try_attach_clipboard_image():
+                n = len(self._attached_images)
+                _cprint(f"  📎 Image #{n} attached from clipboard")
+            else:
+                _cprint(f"  {_DIM}(>_<) Clipboard has an image but extraction failed{_RST}")
+        else:
+            _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
+
+    def _build_multimodal_content(self, text: str, images: list) -> list:
+        """Convert text + image paths into OpenAI vision multimodal content.
+
+        Returns a list of content parts suitable for the ``content`` field
+        of a ``user`` message.
+        """
+        import base64 as _b64
+
+        content_parts = []
+        text_part = text if isinstance(text, str) and text else "What do you see in this image?"
+        content_parts.append({"type": "text", "text": text_part})
+
+        _MIME = {
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "webp": "image/webp",
+        }
+        for img_path in images:
+            if img_path.exists():
+                data = _b64.b64encode(img_path.read_bytes()).decode()
+                ext = img_path.suffix.lower().lstrip(".")
+                mime = _MIME.get(ext, "image/png")
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{data}"}
+                })
+        return content_parts
+
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""
         try:
@@ -1889,6 +1973,8 @@ class HermesCLI:
             self._manual_compress()
         elif cmd_lower == "/usage":
             self._show_usage()
+        elif cmd_lower == "/paste":
+            self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
             self._reload_mcp()
         elif cmd_lower == "/copycode":
@@ -2363,12 +2449,15 @@ metadata:
         self._approval_state = None
         self._approval_deadline = 0
         self._invalidate()
-        _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+        _cprint(f"\n{_DIM}  Timeout — denying command{_RST}")
         return "deny"
 
-    def chat(self, message) -> Optional[str]:
+    def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
+        
+        Handles streaming output, interrupt detection (user typing while agent
+        is working), and re-queueing of interrupted messages.
         
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
         race conditions between the process_loop and interrupt monitoring. Messages
@@ -2376,7 +2465,8 @@ metadata:
         idle go to _pending_input.
         
         Args:
-            message: The user's message
+            message: The user's message (str or multimodal content list)
+            images: Optional list of Path objects for attached images
             
         Returns:
             The agent's response, or None on error
@@ -2389,6 +2479,15 @@ metadata:
         if not self._init_agent():
             return None
         
+        # Convert attached images to OpenAI vision multimodal content
+        if images:
+            message = self._build_multimodal_content(
+                message if isinstance(message, str) else "", images
+            )
+            for img_path in images:
+                if img_path.exists():
+                    _cprint(f"  {_DIM}📎 attached {img_path.name} ({img_path.stat().st_size // 1024}KB){_RST}")
+
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
@@ -2570,9 +2669,9 @@ metadata:
         self._approval_state = None     # dict with command, description, choices, selected, response_queue
         self._approval_deadline = 0
 
-        # Clipboard image attachments (like Claude Code's [Image #N])
-        self._attached_images = []      # list of Path objects for attached images
-        self._image_counter = 0         # global counter for image numbering
+        # Clipboard image attachments (paste images into the CLI)
+        self._attached_images: list[Path] = []
+        self._image_counter = 0
 
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
@@ -2643,7 +2742,7 @@ metadata:
 
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
-            has_images = len(self._attached_images) > 0
+            has_images = bool(self._attached_images)
             if text or has_images:
                 # Snapshot and clear attached images
                 images = list(self._attached_images)
@@ -2767,7 +2866,7 @@ metadata:
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 self.agent.interrupt()
             else:
-                # If there's text in the input buffer or images attached, clear them.
+                # If there's text or images, clear them (like bash).
                 # If everything is already empty, exit.
                 if event.app.current_buffer.text or self._attached_images:
                     event.app.current_buffer.reset()
@@ -2783,177 +2882,35 @@ metadata:
             self._should_exit = True
             event.app.exit()
 
-        # Subprocess script for clipboard image extraction on macOS.
-        # MUST run in a separate process because prompt_toolkit's asyncio
-        # event loop prevents AppKit's CFRunLoop/XPC from functioning
-        # in-process (NSPasteboard silently returns nil).
-        _MACOS_CLIP_SCRIPT = r'''
-import sys, os
-try:
-    from AppKit import NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF
-    from AppKit import NSBitmapImageRep, NSPNGFileType
-    dest = sys.argv[1]
-    pb = NSPasteboard.generalPasteboard()
-    png = pb.dataForType_(NSPasteboardTypePNG)
-    if png:
-        png.writeToFile_atomically_(dest, True)
-        sys.exit(0)
-    tiff = pb.dataForType_(NSPasteboardTypeTIFF)
-    if tiff:
-        rep = NSBitmapImageRep.imageRepWithData_(tiff)
-        if rep:
-            out = rep.representationUsingType_properties_(NSPNGFileType, {})
-            if out:
-                out.writeToFile_atomically_(dest, True)
-                sys.exit(0)
-    sys.exit(1)
-except Exception as e:
-    print(str(e), file=sys.stderr)
-    sys.exit(1)
-'''
-
-        def _save_clipboard_image():
-            """Save clipboard image to disk if present. Returns Path or None."""
-            import subprocess as _sp
-            import sys as _sys
-
-            img_dir = Path.home() / ".hermes" / "images"
-            img_dir.mkdir(parents=True, exist_ok=True)
-            self._image_counter += 1
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
-
-            if _sys.platform == "darwin":
-                # Method 1: pngpaste (brew install pngpaste) — fastest
-                try:
-                    r = _sp.run(["pngpaste", str(img_path)],
-                                capture_output=True, timeout=3)
-                    if r.returncode == 0 and img_path.exists() and img_path.stat().st_size > 0:
-                        _plog(f"  pngpaste succeeded: {img_path}")
-                        return img_path
-                except FileNotFoundError:
-                    pass
-                except Exception as e:
-                    _plog(f"  pngpaste error: {e}")
-
-                # Method 2: PyObjC in subprocess (avoids asyncio/CFRunLoop conflict)
-                try:
-                    r = _sp.run(
-                        [_sys.executable, "-c", _MACOS_CLIP_SCRIPT, str(img_path)],
-                        capture_output=True, timeout=5,
-                    )
-                    _plog(f"  pyobjc subprocess: rc={r.returncode} stderr={r.stderr.decode(errors='replace').strip()}")
-                    if r.returncode == 0 and img_path.exists() and img_path.stat().st_size > 0:
-                        _plog(f"  pyobjc subprocess succeeded: {img_path}")
-                        return img_path
-                except Exception as e:
-                    _plog(f"  pyobjc subprocess error: {e}")
-
-                # Method 3: osascript fallback
-                try:
-                    info = _sp.run(
-                        ["osascript", "-e", "clipboard info"],
-                        capture_output=True, text=True, timeout=3,
-                    )
-                    _plog(f"  osascript clipboard info: {info.stdout.strip()}")
-                    if "«class PNGf»" in info.stdout or "«class TIFF»" in info.stdout:
-                        _sp.run(
-                            ["osascript", "-e",
-                             'try\n'
-                             f'  set imgData to the clipboard as «class PNGf»\n'
-                             f'  set f to open for access POSIX file "{img_path}" with write permission\n'
-                             f'  write imgData to f\n'
-                             f'  close access f\n'
-                             f'on error\n'
-                             f'  try\n'
-                             f'    close access POSIX file "{img_path}"\n'
-                             f'  end try\n'
-                             f'end try'],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        if img_path.exists() and img_path.stat().st_size > 0:
-                            _plog(f"  osascript succeeded: {img_path}")
-                            return img_path
-                except Exception as e:
-                    _plog(f"  osascript error: {e}")
-
-                self._image_counter -= 1
-                return None
-            else:
-                # Linux: xclip
-                try:
-                    targets = _sp.run(
-                        ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
-                        capture_output=True, text=True, timeout=2,
-                    )
-                    if "image/png" not in targets.stdout:
-                        self._image_counter -= 1
-                        return None
-                    data = _sp.run(
-                        ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
-                        capture_output=True, timeout=5,
-                    )
-                    if data.stdout:
-                        img_path.write_bytes(data.stdout)
-                        return img_path
-                except Exception:
-                    pass
-                self._image_counter -= 1
-                return None
-
-        def _get_clipboard_text():
-            """Get text from system clipboard."""
-            import subprocess as _sp
-            import sys as _sys
-            try:
-                if _sys.platform == "darwin":
-                    r = _sp.run(["pbpaste"], capture_output=True, text=True, timeout=2)
-                else:
-                    r = _sp.run(["xclip", "-selection", "clipboard", "-o"],
-                                capture_output=True, text=True, timeout=2)
-                return r.stdout if r.returncode == 0 else ""
-            except Exception:
-                return ""
-
-        _paste_log = Path.home() / ".hermes" / "paste_debug.log"
-        def _plog(msg):
-            with open(_paste_log, "a") as f:
-                f.write(f"[{datetime.now().isoformat()}] {msg}\n")
-
-        def _do_paste_image(event):
-            """Check clipboard for image, attach if found."""
-            _plog("_do_paste_image called")
-            img_path = _save_clipboard_image()
-            _plog(f"  _save_clipboard_image -> {img_path}")
-            if img_path:
-                self._attached_images.append(img_path)
-                event.app.invalidate()
-                _plog(f"  attached! total={len(self._attached_images)}")
-                return True
-            return False
-
         from prompt_toolkit.keys import Keys
 
         @kb.add(Keys.BracketedPaste, eager=True)
-        def handle_bracketed_paste(event):
-            """Cmd+V / terminal paste — handles text AND clipboard images."""
+        def handle_paste(event):
+            """Handle terminal paste — detect clipboard images.
+
+            When the terminal supports bracketed paste, Ctrl+V / Cmd+V
+            triggers this with the pasted text.  We also check the
+            clipboard for an image on every paste event.
+            """
             pasted_text = event.data or ""
-            _plog(f"BracketedPaste fired! data={repr(pasted_text[:100])}")
-            _do_paste_image(event)
+            if self._try_attach_clipboard_image():
+                event.app.invalidate()
             if pasted_text:
                 event.current_buffer.insert_text(pasted_text)
-            event.app.invalidate()
 
-        @kb.add('c-v', eager=True, filter=Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
-        ))
-        def handle_ctrl_v_paste(event):
-            """Ctrl+V fallback — paste from clipboard: text and/or image."""
-            _do_paste_image(event)
-            text = _get_clipboard_text()
-            if text:
-                event.current_buffer.insert_text(text)
-            event.app.invalidate()
+        @kb.add('c-v')
+        def handle_ctrl_v(event):
+            """Fallback image paste for terminals without bracketed paste.
+
+            On Linux terminals (GNOME Terminal, Konsole, etc.), Ctrl+V
+            sends raw byte 0x16 instead of triggering a paste.  This
+            binding catches that and checks the clipboard for images.
+            On terminals that DO intercept Ctrl+V for paste (macOS
+            Terminal, iTerm2, VSCode, Windows Terminal), the bracketed
+            paste handler fires instead and this binding never triggers.
+            """
+            if self._try_attach_clipboard_image():
+                event.app.invalidate()
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -3285,10 +3242,26 @@ except Exception as e:
         )
 
         # Horizontal rules above and below the input (bronze, 1 line each).
-        # Use a callable so the rule redraws at the current terminal width
-        # after a resize (avoids the old 200-char overflow/garble).
         input_rule_top = Window(height=1, char='─', style='class:input-rule')
         input_rule_bot = Window(height=1, char='─', style='class:input-rule')
+
+        # Image attachment indicator — shows badges like [Image #1] above input
+        cli_ref = self
+
+        def _get_image_bar():
+            if not cli_ref._attached_images:
+                return []
+            base = cli_ref._image_counter - len(cli_ref._attached_images) + 1
+            badges = " ".join(
+                f"[Image #{base + i}]"
+                for i in range(len(cli_ref._attached_images))
+            )
+            return [("class:image-badge", f" {badges} ")]
+
+        image_bar = Window(
+            content=FormattedTextControl(_get_image_bar),
+            height=Condition(lambda: bool(cli_ref._attached_images)),
+        )
 
         # Layout: interactive prompt widgets + ruled input at bottom.
         # The sudo, approval, and clarify widgets appear above the input when
@@ -3302,6 +3275,7 @@ except Exception as e:
                 spacer,
                 images_widget,
                 input_rule_top,
+                image_bar,
                 input_area,
                 input_rule_bot,
                 CompletionsMenu(max_height=12, scroll_offset=1),
@@ -3317,6 +3291,8 @@ except Exception as e:
             'hint': '#555555 italic',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
+            # Clipboard image attachment badges
+            'image-badge': '#87CEEB bold',
             'completion-menu': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion.current': 'bg:#333355 #FFD700',
@@ -3368,11 +3344,11 @@ except Exception as e:
                         continue
                     
                     # Unpack (text, images) tuple if present
-                    _submit_images = []
+                    submit_images = []
                     if isinstance(user_input, tuple):
-                        user_input, _submit_images = user_input
+                        user_input, submit_images = user_input
 
-                    if not user_input and not _submit_images:
+                    if not user_input and not submit_images:
                         continue
 
                     # Check for commands
@@ -3386,10 +3362,7 @@ except Exception as e:
 
                     # Expand paste references back to full content
                     import re as _re
-                    if isinstance(user_input, str):
-                        paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines \u2192 (.+)\]', user_input)
-                    else:
-                        paste_match = None
+                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines \u2192 (.+)\]', user_input) if isinstance(user_input, str) else None
                     if paste_match:
                         paste_path = Path(paste_match.group(1))
                         if paste_path.exists():
@@ -3410,70 +3383,18 @@ except Exception as e:
                         elif user_input:
                             print()
                             _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}{user_input}{_RST}")
-                        elif _submit_images:
-                            img_count = len(_submit_images)
-                            print()
-                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}[{img_count} image{'s' if img_count > 1 else ''}]{_RST}")
 
-                    # Build image parts from attached clipboard images
-                    import re as _re2
-                    _img_parts = []
-                    import base64 as _b64
-                    for ip in _submit_images:
-                        if ip.exists():
-                            data = _b64.b64encode(ip.read_bytes()).decode()
-                            ext = ip.suffix.lower().lstrip('.')
-                            mime = {'png': 'image/png', 'jpg': 'image/jpeg',
-                                    'jpeg': 'image/jpeg', 'gif': 'image/gif',
-                                    'webp': 'image/webp'}.get(ext, 'image/png')
-                            _img_parts.append({
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime};base64,{data}"}
-                            })
-                            _cprint(f"  {_DIM}\U0001F4CE attached {ip.name} ({ip.stat().st_size // 1024}KB){_RST}")
-
-                    # Also extract inline [image: /path] references (legacy format)
-                    if isinstance(user_input, str):
-                        _inline_refs = _re2.findall(r'\[image:\s*(.+?)\]', user_input)
-                        if _inline_refs:
-                            user_input = _re2.sub(r'\[image:\s*.+?\]', '', user_input).strip()
-                            for img_p in _inline_refs:
-                                ip = Path(img_p.strip())
-                                if ip.exists():
-                                    data = _b64.b64encode(ip.read_bytes()).decode()
-                                    ext = ip.suffix.lower().lstrip('.')
-                                    mime = {'png': 'image/png', 'jpg': 'image/jpeg',
-                                            'jpeg': 'image/jpeg', 'gif': 'image/gif',
-                                            'webp': 'image/webp'}.get(ext, 'image/png')
-                                    _img_parts.append({
-                                        "type": "image_url",
-                                        "image_url": {"url": f"data:{mime};base64,{data}"}
-                                    })
-                                    _cprint(f"  {_DIM}\U0001F4CE attached {ip.name} ({ip.stat().st_size // 1024}KB){_RST}")
-
-                    if _img_parts:
-                        content_parts = []
-                        text_part = user_input if isinstance(user_input, str) else ""
-                        if not text_part:
-                            text_part = "What do you see in this image?"
-                        n_imgs = len(_img_parts)
-                        img_note = f"[{n_imgs} image{'s' if n_imgs > 1 else ''} attached — refer to {'them' if n_imgs > 1 else 'it'} in your response]"
-                        content_parts.append({"type": "text", "text": f"{text_part}\n\n{img_note}"})
-                        content_parts.extend(_img_parts)
-                        user_input = content_parts
+                    # Show image attachment count
+                    if submit_images:
+                        n = len(submit_images)
+                        _cprint(f"  {_DIM}attached {n} image{'s' if n > 1 else ''}{_RST}")
 
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
 
-                    # Debug: confirm image content reaching chat()
-                    if isinstance(user_input, list):
-                        _n = sum(1 for p in user_input if isinstance(p, dict) and p.get("type") == "image_url")
-                        if _n:
-                            _plog(f"chat() receiving {_n} image(s) in multipart content")
-
                     try:
-                        self.chat(user_input)
+                        self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
                         app.invalidate()  # Refresh status line
