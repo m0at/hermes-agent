@@ -1940,33 +1940,34 @@ class HermesCLI:
             self.reset_conversation()
         elif cmd_lower.startswith("/model"):
             # Shortcut aliases for quick model switching
+            # Maps alias -> (anthropic_direct_id, openrouter_id)
+            _CLAUDE_MODELS = {
+                "opus": ("claude-opus-4-6", "anthropic/claude-opus-4"),
+                "sonnet": ("claude-sonnet-4-6", "anthropic/claude-sonnet-4"),
+                "haiku": ("claude-haiku-4-5", "anthropic/claude-haiku-4"),
+            }
             _MODEL_ALIASES = {
-                "opus": "anthropic/claude-opus-4",
-                "sonnet": "anthropic/claude-sonnet-4",
-                "haiku": "anthropic/claude-haiku-4",
                 "qwen": "local/qwen3.5-9b",
             }
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
                 arg = parts[1].strip()
-                new_model = _MODEL_ALIASES.get(arg.lower(), arg)
-                self.model = new_model
-                self.agent = None  # Force re-init
-                if new_model.startswith("local/"):
-                    self.requested_provider = "local"
-                    self.api_key = "local"
-                    self.base_url = "http://127.0.0.1:8800/v1"
-                    self._explicit_base_url = self.base_url
-                elif new_model.startswith("anthropic/") or new_model.startswith("claude"):
-                    # Prefer ANTHROPIC_API_KEY (direct via litellm), fall back to OpenRouter
+                arg_lower = arg.lower()
+
+                # Resolve Claude shortcuts based on available API keys
+                claude_alias = _CLAUDE_MODELS.get(arg_lower)
+                if claude_alias:
                     ant_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
                     or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                    direct_id, openrouter_id = claude_alias
                     if ant_key:
+                        new_model = direct_id
                         self.requested_provider = "anthropic"
                         self.api_key = ant_key
-                        self.base_url = ""  # litellm handles routing
+                        self.base_url = ""
                         self._explicit_base_url = ""
                     elif or_key:
+                        new_model = openrouter_id
                         self.requested_provider = "openrouter"
                         self.api_key = or_key
                         self.base_url = "https://openrouter.ai/api/v1"
@@ -1974,14 +1975,40 @@ class HermesCLI:
                     else:
                         print("  Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY first")
                         return True
+                elif arg_lower in _MODEL_ALIASES:
+                    new_model = _MODEL_ALIASES[arg_lower]
                 else:
-                    # Unknown model — try OpenRouter
-                    or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-                    if or_key:
-                        self.requested_provider = "openrouter"
-                        self.api_key = or_key
-                        self.base_url = "https://openrouter.ai/api/v1"
-                        self._explicit_base_url = self.base_url
+                    new_model = arg
+
+                self.model = new_model
+                self.agent = None  # Force re-init
+                if new_model.startswith("local/"):
+                    self.requested_provider = "local"
+                    self.api_key = "local"
+                    self.base_url = "http://127.0.0.1:8800/v1"
+                    self._explicit_base_url = self.base_url
+                elif not claude_alias:
+                    # Non-alias, non-local model — try OpenRouter
+                    if new_model.startswith("anthropic/") or new_model.startswith("claude"):
+                        ant_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+                        or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                        if ant_key:
+                            self.requested_provider = "anthropic"
+                            self.api_key = ant_key
+                            self.base_url = ""
+                            self._explicit_base_url = ""
+                        elif or_key:
+                            self.requested_provider = "openrouter"
+                            self.api_key = or_key
+                            self.base_url = "https://openrouter.ai/api/v1"
+                            self._explicit_base_url = self.base_url
+                    else:
+                        or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                        if or_key:
+                            self.requested_provider = "openrouter"
+                            self.api_key = or_key
+                            self.base_url = "https://openrouter.ai/api/v1"
+                            self._explicit_base_url = self.base_url
                 save_config_value("model.default", new_model)
                 provider_label = self.requested_provider
                 if provider_label == "anthropic":
