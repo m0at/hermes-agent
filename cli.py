@@ -3619,6 +3619,13 @@ metadata:
                         n = len(submit_images)
                         _cprint(f"  {_DIM}attached {n} image{'s' if n > 1 else ''}{_RST}")
 
+                    # Auto-detect swarm intent in natural language
+                    if isinstance(user_input, str) and _re.search(
+                        r'\bswarm\b', user_input, _re.IGNORECASE
+                    ):
+                        self._handle_swarm_command(f"/swarm {user_input}")
+                        continue
+
                     # Regular chat - run agent
                     self._agent_running = True
                     self._background_requested = False

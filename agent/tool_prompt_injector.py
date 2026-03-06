@@ -17,19 +17,25 @@ def format_tools_for_prompt(tools: list[dict]) -> str:
     tools_block = "\n".join(tool_defs)
 
     return (
-        "You have access to the following tools. To call a tool, output a tool_call XML block:\n"
+        "You are a function-calling agent. You MUST use your tools to complete tasks.\n"
+        "To call a tool, output a <tool_call> XML block with valid JSON inside:\n"
         "\n"
         "<tool_call>\n"
         '{"name": "tool_name", "arguments": {"param": "value"}}\n'
         "</tool_call>\n"
         "\n"
+        "RULES:\n"
+        "- ALWAYS call tools to take action. NEVER just describe what you would do.\n"
+        "- If a tool fails, try a different approach. Do NOT give up.\n"
+        "- If asked to create files/directories that don't exist, CREATE them.\n"
+        "- You may call multiple tools in one response.\n"
+        "- After each tool call you will receive a <tool_response> with the result.\n"
+        "- Only give your final answer (without tool_call tags) after completing all actions.\n"
+        "\n"
         "Available tools:\n"
         "<tools>\n"
         f"{tools_block}\n"
-        "</tools>\n"
-        "\n"
-        "After each tool call, you will receive the result in a <tool_response> block. "
-        "You may call multiple tools. When you have the final answer, respond normally without tool_call tags."
+        "</tools>"
     )
 
 
