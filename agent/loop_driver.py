@@ -587,6 +587,44 @@ def drive_loop(
                             "error": t.message,
                         }
 
+                # Premature quit detection: model gave up mid-task
+                if (
+                    agent.api_mode != "codex_responses"
+                    and agent.tools
+                    and sm.iteration > 1
+                    and len(final_response) < 300
+                ):
+                    _quit_phrases = [
+                        "read-only", "permission denied", "cannot ",
+                        "let me try", "try a different", "instead",
+                        "i'll create", "unable to", "failed",
+                    ]
+                    _resp_lower = final_response.lower()
+                    _looks_like_quit = any(p in _resp_lower for p in _quit_phrases)
+
+                    if not hasattr(agent, '_premature_quit_nudges'):
+                        agent._premature_quit_nudges = 0
+
+                    if _looks_like_quit and agent._premature_quit_nudges < 2:
+                        agent._premature_quit_nudges += 1
+                        interim = agent._build_assistant_message(assistant_message, finish_reason)
+                        messages.append(interim)
+                        agent._log_msg_to_db(interim)
+                        nudge = {
+                            "role": "user",
+                            "content": (
+                                "Don't give up — keep going. Try the current working "
+                                "directory or ~/. Use your tools to complete the task."
+                            ),
+                        }
+                        messages.append(nudge)
+                        agent._log_msg_to_db(nudge)
+                        if not agent.quiet_mode:
+                            print(f"{agent.log_prefix}› Model appeared to give up, nudging to continue ({agent._premature_quit_nudges}/2)...")
+                        continue
+                    elif not _looks_like_quit:
+                        agent._premature_quit_nudges = 0
+
                 # Codex ack continuation check
                 if (
                     agent.api_mode == "codex_responses"
