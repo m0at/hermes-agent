@@ -427,6 +427,7 @@ class AIAgent:
         self._cached_system_prompt: Optional[str] = None
         
         # SQLite session store (optional -- provided by CLI or gateway)
+        self._session_db_flushed = 0  # tracks how many messages _log_msg_to_db has written
         self._session_db = session_db
         if self._session_db:
             try:
@@ -711,7 +712,12 @@ class AIAgent:
         return None
     
     def _cleanup_task_resources(self, task_id: str) -> None:
-        """Clean up VM and browser resources for a given task."""
+        """Clean up VM and browser resources for a given task.
+
+        Skips VM cleanup when background processes are still running so they
+        survive across conversation turns.  The periodic cleanup thread in
+        terminal_tool will reclaim the sandbox once all processes exit.
+        """
         try:
             cleanup_vm(task_id)
         except Exception as e:
@@ -756,6 +762,7 @@ class AIAgent:
                 tool_call_id=msg.get("tool_call_id"),
                 finish_reason=msg.get("finish_reason"),
             )
+            self._session_db_flushed += 1
         except Exception as e:
             logger.debug("Session DB log_msg failed: %s", e)
 
@@ -769,7 +776,8 @@ class AIAgent:
         if not self._session_db:
             return
         try:
-            start_idx = len(conversation_history) if conversation_history else 0
+            hist_idx = len(conversation_history) if conversation_history else 0
+            start_idx = max(hist_idx, self._session_db_flushed)
             for msg in messages[start_idx:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -790,6 +798,7 @@ class AIAgent:
                     tool_call_id=msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
                 )
+            self._session_db_flushed = len(messages)
         except Exception as e:
             logger.debug("Session DB append_message failed: %s", e)
 
@@ -3904,7 +3913,7 @@ class AIAgent:
         completed = final_response is not None and api_call_count < self.max_iterations
 
         # Save trajectory if enabled
-        self._save_trajectory(messages, user_message, completed)
+        self._save_trajectory(messages, original_user_message, completed)
 
         # Clean up VM and browser for this task after conversation completes
         self._cleanup_task_resources(effective_task_id)

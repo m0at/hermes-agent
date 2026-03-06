@@ -655,16 +655,16 @@ def get_active_environments_info() -> Dict[str, Any]:
     return info
 
 
-def cleanup_all_environments():
+def cleanup_all_environments(*, force: bool = False):
     """Clean up ALL active environments. Use with caution."""
     global _active_environments, _last_activity
-    
+
     task_ids = list(_active_environments.keys())
     cleaned = 0
-    
+
     for task_id in task_ids:
         try:
-            cleanup_vm(task_id)
+            cleanup_vm(task_id, force=force)
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
@@ -684,9 +684,29 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str):
-    """Manually clean up a specific environment by task_id."""
+def cleanup_vm(task_id: str, *, force: bool = False):
+    """Manually clean up a specific environment by task_id.
+
+    Args:
+        force: If True, tear down even when background processes are running
+               (used at process exit).
+    """
     global _active_environments, _last_activity
+
+    # Skip teardown if there are still active background processes for this
+    # task -- killing the sandbox would destroy them.  The periodic cleanup
+    # thread will reclaim it once all processes have exited.
+    if not force:
+        try:
+            from tools.process_registry import process_registry
+            if process_registry.has_active_processes(task_id):
+                logger.info(
+                    "Skipping cleanup for task %s: active background processes",
+                    task_id,
+                )
+                return
+        except ImportError:
+            pass
 
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
@@ -734,7 +754,7 @@ def _atexit_cleanup():
     if _active_environments:
         count = len(_active_environments)
         logger.info("Shutting down %d remaining sandbox(es)...", count)
-        cleanup_all_environments()
+        cleanup_all_environments(force=True)
 
 atexit.register(_atexit_cleanup)
 
