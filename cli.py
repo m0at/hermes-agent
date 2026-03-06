@@ -146,7 +146,7 @@ def load_cli_config() -> Dict[str, Any]:
     # Default configuration
     defaults = {
         "model": {
-            "default": "anthropic/claude-opus-4.6",
+            "default": "local/qwen3.5-9b",
             "base_url": OPENROUTER_BASE_URL,
             "provider": "auto",
         },
@@ -892,9 +892,18 @@ class HermesCLI:
         self._explicit_base_url = base_url
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
+        # Infer provider from model prefix if not explicitly set.
+        _inferred_provider = None
+        if self.model.startswith("local/"):
+            _inferred_provider = "local"
+        elif self.model.startswith("anthropic/"):
+            _inferred_provider = "auto"  # let resolver pick openrouter/nous
+        elif self.model.startswith("openai/"):
+            _inferred_provider = "auto"
         self.requested_provider = (
             provider
             or os.getenv("HERMES_INFERENCE_PROVIDER")
+            or _inferred_provider
             or CLI_CONFIG["model"].get("provider")
             or "auto"
         )
@@ -1012,7 +1021,8 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
-        if not isinstance(api_key, str) or not api_key:
+        is_local = resolved_provider == "local"
+        if not is_local and (not isinstance(api_key, str) or not api_key):
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
         if not isinstance(base_url, str) or not base_url:
