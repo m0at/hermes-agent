@@ -2100,71 +2100,70 @@ class HermesCLI:
             print(f"  ❌ MCP reload failed: {e}")
 
     def _copycode(self):
-        """Import Claude Code commands/skills into Hermes skills directory."""
+        """Import Claude Code skills and commands into Hermes skills directory."""
         import shutil
         import re
 
-        claude_dirs = [
-            Path.home() / ".claude" / "commands",
-            Path.home() / ".claude" / "plugins" / "marketplaces",
-        ]
-
-        # Find all .md command files from Claude Code
-        found = []
-        for d in claude_dirs:
-            if d.exists():
-                for md in d.rglob("*.md"):
-                    if "commands" in str(md.parent) or "commands" in md.parts:
-                        found.append(md)
-
-        if not found:
-            print("No Claude Code commands found in ~/.claude/")
-            return
-
+        claude_base = Path.home() / ".claude"
         skills_dir = Path.home() / ".hermes" / "skills" / "imported-from-claude"
         skills_dir.mkdir(parents=True, exist_ok=True)
 
         imported = 0
         skipped = 0
-        for src in found:
-            # Derive skill name from filename
-            name = src.stem  # e.g. "commit", "code-review"
 
-            # Read source
-            content = src.read_text(encoding="utf-8")
+        # --- 1. Copy SKILL.md directories (skills already in hermes format) ---
+        for skill_md in claude_base.rglob("SKILL.md"):
+            skill_src_dir = skill_md.parent
+            name = skill_src_dir.name  # e.g. "frontend-design", "skill-creator"
+            dest_dir = skills_dir / name
 
-            # Parse existing frontmatter
+            if dest_dir.exists():
+                skipped += 1
+                continue
+
+            # Copy the whole skill directory (SKILL.md + references/)
+            shutil.copytree(skill_src_dir, dest_dir)
+            imported += 1
+            print(f"  + {name} (skill)")
+
+        # --- 2. Convert command .md files to SKILL.md format ---
+        for cmd_md in claude_base.rglob("*.md"):
+            # Only grab files inside a "commands" directory
+            if "commands" not in cmd_md.parts:
+                continue
+            if cmd_md.name == "SKILL.md":
+                continue
+
+            name = cmd_md.stem
+            dest_dir = skills_dir / name
+
+            if dest_dir.exists():
+                skipped += 1
+                continue
+
+            content = cmd_md.read_text(encoding="utf-8")
+
+            # Parse frontmatter
             fm_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
             if fm_match:
                 fm_text = fm_match.group(1)
                 body = content[fm_match.end():]
-                # Extract description
                 desc_match = re.search(r'^description:\s*(.+)$', fm_text, re.MULTILINE)
-                desc = desc_match.group(1).strip() if desc_match else f"Imported from Claude Code: {name}"
+                desc = desc_match.group(1).strip() if desc_match else f"Imported command: {name}"
             else:
-                fm_text = ""
                 body = content
-                desc = f"Imported from Claude Code: {name}"
+                desc = f"Imported command: {name}"
 
-            # Build Hermes SKILL.md
-            # Figure out source plugin name for attribution
-            parts = src.parts
+            # Figure out plugin name for attribution
+            parts = cmd_md.parts
             plugin_name = name
             if "plugins" in parts:
-                idx = parts.index("plugins")
-                if idx + 1 < len(parts):
-                    plugin_name = parts[idx + 1]
+                idx = list(parts).index("plugins")
+                if idx + 2 < len(parts):
+                    plugin_name = parts[idx + 2]
 
-            skill_dir = skills_dir / name
-            skill_file = skill_dir / "SKILL.md"
-
-            if skill_file.exists():
-                skipped += 1
-                continue
-
-            skill_dir.mkdir(parents=True, exist_ok=True)
-
-            hermes_skill = f"""---
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            (dest_dir / "SKILL.md").write_text(f"""---
 name: {name}
 description: {desc}
 version: 1.0.0
@@ -2172,17 +2171,15 @@ author: Imported from Claude Code ({plugin_name})
 license: MIT
 metadata:
   hermes:
-    tags: [imported, claude-code]
-    source: {src}
+    tags: [imported, claude-code, command]
+    source: "{cmd_md}"
 ---
 
-{body}"""
-
-            skill_file.write_text(hermes_skill, encoding="utf-8")
+{body}""", encoding="utf-8")
             imported += 1
-            print(f"  + {name}")
+            print(f"  + {name} (command)")
 
-        print(f"\nImported {imported} skill(s) to {skills_dir}")
+        print(f"\nImported {imported} to {skills_dir}")
         if skipped:
             print(f"  ({skipped} already existed, skipped)")
 
