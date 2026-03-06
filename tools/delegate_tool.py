@@ -16,15 +16,77 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
-import contextlib
 import io
 import json
 import logging
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+
+
+class _ThreadLocalStream:
+    """A sys.stdout/stderr wrapper that silently captures writes from
+    registered child threads into per-thread StringIO buffers, while
+    passing all other threads' writes through to the real stream.
+
+    This avoids the process-global race inherent in
+    contextlib.redirect_stdout / redirect_stderr.
+    """
+
+    def __init__(self, real_stream):
+        self._real = real_stream
+        self._local = threading.local()
+        self._suppressed_threads: set = set()
+
+    # -- public API for callers ------------------------------------------
+
+    def suppress_current_thread(self):
+        tid = threading.current_thread().ident
+        self._suppressed_threads.add(tid)
+        self._local.buffer = io.StringIO()
+
+    def unsuppress_current_thread(self):
+        tid = threading.current_thread().ident
+        self._suppressed_threads.discard(tid)
+        self._local.buffer = None
+
+    # -- file-like interface ---------------------------------------------
+
+    def write(self, s):
+        if threading.current_thread().ident in self._suppressed_threads:
+            buf = getattr(self._local, "buffer", None)
+            if buf is not None:
+                return buf.write(s)
+            return len(s) if isinstance(s, str) else 0
+        return self._real.write(s)
+
+    def flush(self):
+        if threading.current_thread().ident in self._suppressed_threads:
+            buf = getattr(self._local, "buffer", None)
+            if buf is not None:
+                buf.flush()
+            return
+        self._real.flush()
+
+    def fileno(self):
+        return self._real.fileno()
+
+    def isatty(self):
+        return self._real.isatty()
+
+    @property
+    def encoding(self):
+        return getattr(self._real, "encoding", "utf-8")
+
+    @property
+    def errors(self):
+        return getattr(self._real, "errors", "strict")
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 # Tools that children must never have access to
@@ -217,10 +279,30 @@ def _run_single_child(
         if hasattr(parent_agent, '_active_children'):
             parent_agent._active_children.append(child)
 
-        # Run with stdout/stderr suppressed to prevent interleaved output
-        devnull = io.StringIO()
-        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+        # Suppress this thread's stdout/stderr via thread-local wrappers
+        # instead of process-global contextlib.redirect_stdout which races
+        # with sibling threads and can scramble the parent's output.
+        _out_wrapper = None
+        _err_wrapper = None
+        try:
+            if isinstance(sys.stdout, _ThreadLocalStream):
+                _out_wrapper = sys.stdout
+            else:
+                _out_wrapper = _ThreadLocalStream(sys.stdout)
+                sys.stdout = _out_wrapper
+            if isinstance(sys.stderr, _ThreadLocalStream):
+                _err_wrapper = sys.stderr
+            else:
+                _err_wrapper = _ThreadLocalStream(sys.stderr)
+                sys.stderr = _err_wrapper
+            _out_wrapper.suppress_current_thread()
+            _err_wrapper.suppress_current_thread()
             result = child.run_conversation(user_message=goal)
+        finally:
+            if _out_wrapper is not None:
+                _out_wrapper.unsuppress_current_thread()
+            if _err_wrapper is not None:
+                _err_wrapper.unsuppress_current_thread()
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
@@ -354,11 +436,6 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
-        # Save stdout/stderr before the executor — redirect_stdout in child
-        # threads races on sys.stdout and can leave it as devnull permanently.
-        _saved_stdout = sys.stdout
-        _saved_stderr = sys.stderr
-
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
             futures = {}
             for i, t in enumerate(task_list):
@@ -413,10 +490,6 @@ def delegate_task(
                         spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
                     except Exception:
                         pass
-
-        # Restore stdout/stderr in case redirect_stdout race left them as devnull
-        sys.stdout = _saved_stdout
-        sys.stderr = _saved_stderr
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])

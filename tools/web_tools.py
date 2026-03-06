@@ -46,7 +46,6 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional
-from firecrawl import Firecrawl
 from openai import AsyncOpenAI
 from agent.auxiliary_client import get_async_text_auxiliary_client
 from tools.debug_helpers import DebugSession
@@ -59,6 +58,7 @@ def _get_firecrawl_client():
     """Get or create the Firecrawl client (lazy initialization)."""
     global _firecrawl_client
     if _firecrawl_client is None:
+        from firecrawl import Firecrawl
         api_key = os.getenv("FIRECRAWL_API_KEY")
         if not api_key:
             raise ValueError("FIRECRAWL_API_KEY environment variable not set")
