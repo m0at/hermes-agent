@@ -2582,6 +2582,8 @@ metadata:
                     styled_response = _re.sub(r'<think>.*?</think>\s*', '', response, flags=_re.DOTALL)
                     # Strip unclosed think blocks (model ran out of tokens mid-think)
                     styled_response = _re.sub(r'<think>.*', '', styled_response, flags=_re.DOTALL)
+                    # Strip orphaned </think> (opening tag in separate field)
+                    styled_response = _re.sub(r'^.*?</think>\s*', '', styled_response, flags=_re.DOTALL)
                     styled_response = styled_response.strip()
 
                 # Render box + response as a single _cprint call so
