@@ -78,6 +78,7 @@ from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    LOCAL_MODEL_TOOL_GUIDANCE,
 )
 from agent.model_metadata import (
     fetch_model_metadata, get_model_context_length,
@@ -1339,6 +1340,10 @@ class AIAgent:
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
         prompt_parts = [DEFAULT_AGENT_IDENTITY]
+
+        # Local models need explicit instruction to persist with tool use
+        if self.model.startswith("local/") and self.tools:
+            prompt_parts.append(LOCAL_MODEL_TOOL_GUIDANCE)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -3829,7 +3834,12 @@ class AIAgent:
                     self._log_msg_to_db(assistant_msg)
                     
                     self._execute_tool_calls(assistant_message, messages, effective_task_id)
-                    
+
+                    # Reset nudge counters — model is actively using tools
+                    self._premature_quit_nudges = 0
+                    if hasattr(self, '_planning_nudges'):
+                        self._planning_nudges = 0
+
                     if self.compression_enabled and self.context_compressor.should_compress():
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
@@ -3939,18 +3949,27 @@ class AIAgent:
 
                     # Detect premature quit: the model gave up on a task and
                     # emitted text instead of continuing with tool calls.
-                    # Signs: short response mentioning failure/inability,
-                    # and the conversation has tool errors in recent messages.
+                    # Local models (Qwen etc.) quit more readily than frontier
+                    # models, so we use a generous char limit and phrase list.
+                    _is_local_model = self.model.startswith("local/")
+                    _max_quit_len = 800 if _is_local_model else 300
+                    _max_quit_nudges = 4 if _is_local_model else 2
                     if (
                         self.api_mode != "codex_responses"
                         and self.tools
                         and api_call_count > 1
-                        and len(final_response) < 300
+                        and len(final_response) < _max_quit_len
                     ):
                         _quit_phrases = [
                             "read-only", "permission denied", "cannot ",
                             "let me try", "try a different", "instead",
                             "i'll create", "unable to", "failed",
+                            "i can't", "i cannot", "not possible",
+                            "unfortunately", "i apologize", "i'm sorry",
+                            "doesn't exist", "not found", "no such",
+                            "i don't have", "beyond my", "outside my",
+                            "let me know if", "is there anything else",
+                            "hope this helps", "if you need",
                         ]
                         _resp_lower = final_response.lower()
                         _looks_like_quit = any(p in _resp_lower for p in _quit_phrases)
@@ -3958,7 +3977,7 @@ class AIAgent:
                         if not hasattr(self, '_premature_quit_nudges'):
                             self._premature_quit_nudges = 0
 
-                        if _looks_like_quit and self._premature_quit_nudges < 2:
+                        if _looks_like_quit and self._premature_quit_nudges < _max_quit_nudges:
                             self._premature_quit_nudges += 1
                             # Keep the model's message in history so it has context
                             interim = self._build_assistant_message(assistant_message, finish_reason)
@@ -3968,16 +3987,51 @@ class AIAgent:
                                 "role": "user",
                                 "content": (
                                     "Don't give up — keep going. Try the current working "
-                                    "directory or ~/. Use your tools to complete the task."
+                                    "directory or ~/. Use your tools to complete the task. "
+                                    "Do NOT summarize or ask me questions — take action now."
                                 ),
                             }
                             messages.append(nudge)
                             self._log_msg_to_db(nudge)
                             if not self.quiet_mode:
-                                print(f"{self.log_prefix}› Model appeared to give up, nudging to continue ({self._premature_quit_nudges}/2)...")
+                                print(f"{self.log_prefix}› Model appeared to give up, nudging to continue ({self._premature_quit_nudges}/{_max_quit_nudges})...")
                             continue
                         elif not _looks_like_quit:
                             self._premature_quit_nudges = 0
+
+                    # Detect planning-without-action: model says "I'll do X"
+                    # but stopped without actually calling any tools.
+                    # Common with local models that narrate plans instead of acting.
+                    if (
+                        self.api_mode != "codex_responses"
+                        and self.tools
+                        and self._is_planning_or_ack(
+                            user_message=user_message,
+                            assistant_content=final_response,
+                            messages=messages,
+                        )
+                    ):
+                        if not hasattr(self, '_planning_nudges'):
+                            self._planning_nudges = 0
+                        _max_planning = 3 if _is_local_model else 2
+                        if self._planning_nudges < _max_planning:
+                            self._planning_nudges += 1
+                            interim = self._build_assistant_message(assistant_message, finish_reason)
+                            messages.append(interim)
+                            self._log_msg_to_db(interim)
+                            nudge = {
+                                "role": "user",
+                                "content": (
+                                    "[System: You described what you plan to do but didn't "
+                                    "execute any tool calls. Stop planning and ACT NOW — "
+                                    "call the tools to complete the task.]"
+                                ),
+                            }
+                            messages.append(nudge)
+                            self._log_msg_to_db(nudge)
+                            if not self.quiet_mode:
+                                print(f"{self.log_prefix}› Model planned without acting, nudging to use tools ({self._planning_nudges}/{_max_planning})...")
+                            continue
 
                     if (
                         self.api_mode == "codex_responses"
