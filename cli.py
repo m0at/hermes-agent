@@ -2485,20 +2485,30 @@ metadata:
                 # nothing can interleave between the box borders.
                 _cprint(f"\n{top}\n{styled_response}\n\n{bot}")
             
-            # Combine all interrupt messages (user may have typed multiple while waiting)
-            # and re-queue as one prompt for process_loop
+            # Re-queue interrupt message for process_loop
             if pending_message and hasattr(self, '_pending_input'):
-                all_parts = [pending_message]
+                # Drain any extra interrupt messages
+                extras = []
                 while not self._interrupt_queue.empty():
                     try:
                         extra = self._interrupt_queue.get_nowait()
                         if extra:
-                            all_parts.append(extra)
+                            extras.append(extra)
                     except queue.Empty:
                         break
-                combined = "\n".join(all_parts)
-                print(f"\n📨 Queued: '{combined[:50]}{'...' if len(combined) > 50 else ''}'")
-                self._pending_input.put(combined)
+                # If pending_message is a tuple (text, images), preserve it as-is
+                if isinstance(pending_message, tuple) or not extras:
+                    display = pending_message[0] if isinstance(pending_message, tuple) else str(pending_message)
+                    print(f"\n📨 Queued: '{str(display)[:50]}'")
+                    self._pending_input.put(pending_message)
+                else:
+                    all_texts = [pending_message] + extras
+                    combined = "\n".join(str(p) for p in all_texts)
+                    print(f"\n📨 Queued: '{combined[:50]}{'...' if len(combined) > 50 else ''}'")
+                    self._pending_input.put(combined)
+                # Re-queue any remaining extras
+                for ex in extras if isinstance(pending_message, tuple) else []:
+                    self._pending_input.put(ex)
             
             return response
             
@@ -2642,7 +2652,7 @@ metadata:
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
-                    self._interrupt_queue.put(payload if isinstance(payload, str) else text)
+                    self._interrupt_queue.put(payload)
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -3446,13 +3456,21 @@ except Exception as e:
                         text_part = user_input if isinstance(user_input, str) else ""
                         if not text_part:
                             text_part = "What do you see in this image?"
-                        content_parts.append({"type": "text", "text": text_part})
+                        n_imgs = len(_img_parts)
+                        img_note = f"[{n_imgs} image{'s' if n_imgs > 1 else ''} attached — refer to {'them' if n_imgs > 1 else 'it'} in your response]"
+                        content_parts.append({"type": "text", "text": f"{text_part}\n\n{img_note}"})
                         content_parts.extend(_img_parts)
                         user_input = content_parts
 
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
+
+                    # Debug: confirm image content reaching chat()
+                    if isinstance(user_input, list):
+                        _n = sum(1 for p in user_input if isinstance(p, dict) and p.get("type") == "image_url")
+                        if _n:
+                            _plog(f"chat() receiving {_n} image(s) in multipart content")
 
                     try:
                         self.chat(user_input)
