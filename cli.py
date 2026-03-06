@@ -720,7 +720,7 @@ COMMANDS = {
     "/help": "Show this help message",
     "/tools": "List available tools",
     "/toolsets": "List available toolsets",
-    "/model": "Show or change the current model",
+    "/model": "Switch model (opus/sonnet/haiku/qwen or full name)",
     "/provider": "Switch provider (openrouter, local, custom) with API key",
     "/prompt": "View/set custom system prompt",
     "/personality": "Set a predefined personality",
@@ -1938,20 +1938,50 @@ class HermesCLI:
         elif cmd_lower in ("/reset", "/new"):
             self.reset_conversation()
         elif cmd_lower.startswith("/model"):
-            # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
+            # Shortcut aliases for quick model switching
+            _MODEL_ALIASES = {
+                "opus": ("anthropic/claude-opus-4", "openrouter"),
+                "sonnet": ("anthropic/claude-sonnet-4", "openrouter"),
+                "haiku": ("anthropic/claude-haiku-4", "openrouter"),
+                "qwen": ("local/qwen3.5-9b", "local"),
+            }
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
-                new_model = parts[1]
-                self.model = new_model
-                self.agent = None  # Force re-init
-                # Save to config
-                if save_config_value("model.default", new_model):
-                    print(f"(^_^)b Model changed to: {new_model} (saved to config)")
+                arg = parts[1].strip()
+                alias = _MODEL_ALIASES.get(arg.lower())
+                if alias:
+                    new_model, new_provider = alias
+                    self.model = new_model
+                    self.requested_provider = new_provider
+                    self.agent = None  # Force re-init
+                    if new_provider == "local":
+                        self.api_key = "local"
+                        self.base_url = "http://127.0.0.1:8800/v1"
+                        self._explicit_base_url = self.base_url
+                    else:
+                        # OpenRouter — need API key
+                        api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                        if not api_key:
+                            print(f"  Set OPENROUTER_API_KEY to use {new_model}")
+                            return True
+                        self.api_key = api_key
+                        self.base_url = "https://openrouter.ai/api/v1"
+                        self._explicit_base_url = self.base_url
+                    save_config_value("model.default", new_model)
+                    print(f"  Switched to: {new_model} ({new_provider})")
                 else:
-                    print(f"(^_^) Model changed to: {new_model} (session only)")
+                    # Raw model name
+                    new_model = arg
+                    self.model = new_model
+                    self.agent = None
+                    if save_config_value("model.default", new_model):
+                        print(f"(^_^)b Model changed to: {new_model} (saved to config)")
+                    else:
+                        print(f"(^_^) Model changed to: {new_model} (session only)")
             else:
                 print(f"Current model: {self.model}")
-                print("  Usage: /model <model-name> to change")
+                print("  Shortcuts: /model opus | sonnet | haiku | qwen")
+                print("  Or: /model <full-model-name>")
         elif cmd_lower.startswith("/provider"):
             self._handle_provider_command(cmd_original)
         elif cmd_lower.startswith("/prompt"):

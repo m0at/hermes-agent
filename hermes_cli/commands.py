@@ -11,7 +11,7 @@ COMMANDS = {
     "/help": "Show this help message",
     "/tools": "List available tools",
     "/toolsets": "List available toolsets",
-    "/model": "Show or change the current model",
+    "/model": "Switch model (opus/sonnet/haiku/qwen or full name)",
     "/prompt": "View/set custom system prompt",
     "/personality": "Set a predefined personality",
     "/clear": "Clear screen and reset conversation (fresh start)",
