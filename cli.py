@@ -2643,23 +2643,45 @@ class HermesCLI:
             import sys as _sys
 
             if _sys.platform == "darwin":
-                try:
-                    info = _sp.run(
-                        ["osascript", "-e", "the clipboard info"],
-                        capture_output=True, text=True, timeout=2,
-                    )
-                    if "«class PNGf»" not in info.stdout and "«class TIFF»" not in info.stdout:
-                        return None
-                except Exception:
-                    return None
-
                 img_dir = Path.home() / ".hermes" / "images"
                 img_dir.mkdir(parents=True, exist_ok=True)
                 self._image_counter += 1
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
 
+                # Try AppKit (PyObjC) first — most reliable
                 try:
+                    from AppKit import NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF
+                    from AppKit import NSBitmapImageRep, NSPNGFileType
+                    pb = NSPasteboard.generalPasteboard()
+                    png_data = pb.dataForType_(NSPasteboardTypePNG)
+                    if png_data:
+                        png_data.writeToFile_atomically_(str(img_path), True)
+                        if img_path.exists() and img_path.stat().st_size > 0:
+                            return img_path
+                    tiff_data = pb.dataForType_(NSPasteboardTypeTIFF)
+                    if tiff_data:
+                        rep = NSBitmapImageRep.imageRepWithData_(tiff_data)
+                        if rep:
+                            out = rep.representationUsingType_properties_(NSPNGFileType, {})
+                            if out:
+                                out.writeToFile_atomically_(str(img_path), True)
+                                if img_path.exists() and img_path.stat().st_size > 0:
+                                    return img_path
+                except ImportError:
+                    pass  # PyObjC not available, fall through
+                except Exception:
+                    pass
+
+                # Fallback: osascript
+                try:
+                    info = _sp.run(
+                        ["osascript", "-e", "the clipboard info"],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    if "«class PNGf»" not in info.stdout and "«class TIFF»" not in info.stdout:
+                        self._image_counter -= 1
+                        return None
                     _sp.run(
                         ["osascript", "-e",
                          f'set f to POSIX file "{img_path}" as text\n'
@@ -2671,6 +2693,9 @@ class HermesCLI:
                         return img_path
                 except Exception:
                     pass
+
+                self._image_counter -= 1
+                return None
             else:
                 # Linux/Windows: try xclip for image
                 try:
@@ -2715,7 +2740,7 @@ class HermesCLI:
             except Exception:
                 return ""
 
-        @kb.add('c-v', filter=Condition(
+        @kb.add('c-v', eager=True, filter=Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
         ))
         def handle_paste(event):
