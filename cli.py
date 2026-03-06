@@ -2754,32 +2754,29 @@ class HermesCLI:
                 return True
             return False
 
+        from prompt_toolkit.keys import Keys
+
+        @kb.add(Keys.BracketedPaste, eager=True)
+        def handle_bracketed_paste(event):
+            """Cmd+V / terminal paste — handles text AND clipboard images."""
+            pasted_text = event.data or ""
+            # Always check for clipboard image on any paste event
+            _do_paste_image(event)
+            # Insert the pasted text into the buffer
+            if pasted_text:
+                event.current_buffer.insert_text(pasted_text)
+            event.app.invalidate()
+
         @kb.add('c-v', eager=True, filter=Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
         ))
-        def handle_paste(event):
-            """Ctrl+V — paste from clipboard: text and/or image."""
+        def handle_ctrl_v_paste(event):
+            """Ctrl+V fallback — paste from clipboard: text and/or image."""
             _do_paste_image(event)
             text = _get_clipboard_text()
             if text:
                 event.current_buffer.insert_text(text)
             event.app.invalidate()
-
-        @kb.add('escape', 'v', eager=True, filter=Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
-        ))
-        def handle_alt_v_paste(event):
-            """Alt+V — fallback paste for terminals that remap Ctrl+V."""
-            handle_paste(event)
-
-        @kb.add('c-p', eager=True, filter=Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
-        ))
-        def handle_paste_image(event):
-            """Ctrl+P — paste image from clipboard."""
-            if not _do_paste_image(event):
-                # No image found, show hint
-                pass
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -2894,7 +2891,7 @@ class HermesCLI:
                 return ""
             if cli_ref._agent_running:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
-            return "Ctrl+P to paste image"
+            return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
 
