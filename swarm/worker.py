@@ -37,16 +37,75 @@ class WorkerBackend(abc.ABC):
 
 
 class LocalWorkerBackend(WorkerBackend):
-    """Runs an AIAgent in a local thread.  Stub implementation for now."""
+    """Runs an AIAgent in a local thread."""
 
     def start_worker(self, worker: SwarmWorker) -> None:
         logger.info("LocalBackend: started worker %s", worker.id)
 
     def run_task(self, worker: SwarmWorker, task: SwarmTask) -> Any:
-        # Stub: simulate work
-        logger.info("LocalBackend: worker %s running task %s", worker.id, task.id)
-        time.sleep(0.1)
-        return {"status": "completed", "output": f"stub result for {task.name}"}
+        """Run a task using a real AIAgent instance."""
+        logger.info("LocalBackend: worker %s running task %s (%s)", worker.id, task.id, task.name)
+
+        try:
+            from run_agent import AIAgent
+        except ImportError:
+            logger.error("AIAgent not available — falling back to stub")
+            return {"status": "completed", "output": f"stub result for {task.name}"}
+
+        # Resolve model — task.model is set by the router before dispatch
+        model = task.model or "local/qwen3.5-9b"
+
+        # Determine API key and base URL from model prefix
+        api_key = "not-needed"
+        base_url = "http://localhost:1234/v1"
+        provider = "local"
+
+        if "/" in model:
+            prefix = model.split("/")[0]
+            if prefix in ("anthropic",):
+                import os
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                base_url = "https://api.anthropic.com/v1"
+                provider = "anthropic"
+            elif prefix in ("openai",):
+                import os
+                api_key = os.environ.get("OPENAI_API_KEY", "")
+                base_url = "https://api.openai.com/v1"
+                provider = "openai"
+            elif prefix in ("local",):
+                api_key = "not-needed"
+                base_url = "http://localhost:1234/v1"
+                provider = "local"
+            else:
+                import os
+                api_key = os.environ.get("OPENROUTER_API_KEY", "")
+                base_url = "https://openrouter.ai/api/v1"
+                provider = "openrouter"
+
+        try:
+            agent = AIAgent(
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                provider=provider,
+                max_turns=task.max_retries * 5 or 15,
+            )
+
+            result = agent.run_conversation(
+                user_message=task.prompt,
+                conversation_history=[],
+                system_prompt=f"You are a focused worker agent. Complete this task: {task.name}",
+            )
+
+            return {
+                "status": "completed" if result.get("completed") else "failed",
+                "output": result.get("final_response", ""),
+                "api_calls": result.get("api_calls", 0),
+                "tokens": getattr(agent, "session_total_tokens", 0),
+            }
+        except Exception as e:
+            logger.error("AIAgent execution failed for task %s: %s", task.id, e)
+            return {"status": "failed", "output": str(e)}
 
     def stop_worker(self, worker: SwarmWorker) -> None:
         logger.info("LocalBackend: stopped worker %s", worker.id)

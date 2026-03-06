@@ -269,3 +269,39 @@ def test_format_tool_results_special_chars():
     assert "foo" in output
     assert "bar" in output
     assert "Error" in output
+
+
+# ── 17. should_adapt: truncated tool call (no closing tag) → True ──
+
+
+def test_should_adapt_truncated_tool_call():
+    """A <tool_call> tag without closing </tool_call> should still trigger adaptation."""
+    content = '<tool_call>{"name": "delegate_task", "arguments": {"goal": "test"'
+    resp = make_response(content)
+    assert should_adapt(resp, "local/qwen3.5-9b") is True
+
+
+# ── 18. adapt_response: truncated JSON returns unchanged but preserves original content ──
+
+
+def test_adapt_response_truncated_preserves_original():
+    content = '<tool_call>{"name": "execute_code", "arguments": {"code": "print(1)'
+    resp = make_response(content)
+    result = adapt_response(resp, SAMPLE_TOOLS)
+    # Should not crash, tool_calls should be None (unparseable)
+    msg = result.choices[0].message
+    assert msg.tool_calls is None
+    # Original content should be preserved for truncation detection
+    assert hasattr(msg, "_original_content")
+    assert "<tool_call>" in msg._original_content
+
+
+# ── 19. should_adapt: truncated + cloud model → False ──
+
+
+def test_should_adapt_truncated_cloud_model_false():
+    content = '<tool_call>{"name": "execute_code", "arguments": {"code": "x"'
+    resp = make_response(content)
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_FORCE_TOOL_INJECTION", None)
+        assert should_adapt(resp, "gpt-4") is False

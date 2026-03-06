@@ -738,6 +738,8 @@ COMMANDS = {
     "/paste": "Check clipboard for an image and attach it",
     "/reload-mcp": "Reload MCP servers from config.yaml",
     "/copycode": "Import Claude Code commands as Hermes skills",
+    "/swarm": "Run parallel agent swarm on a complex task",
+    "/context": "Show remaining context window (ASCII bar)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -1979,6 +1981,10 @@ class HermesCLI:
             self._reload_mcp()
         elif cmd_lower == "/copycode":
             self._copycode()
+        elif cmd_lower == "/context":
+            self._show_context_gauge()
+        elif cmd_lower.startswith("/swarm"):
+            self._handle_swarm_command(cmd_original)
         else:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             base_cmd = cmd_lower.split()[0]
@@ -2099,6 +2105,78 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
+    def _show_context_gauge(self):
+        """Show ASCII context window gauge for the current model."""
+        # Model context limits (only Qwen3.5-9B for now)
+        MODEL_CONTEXTS = {
+            "local/qwen3.5-9b": 32768,
+            "qwen/qwen3.5-9b": 262144,
+        }
+
+        # Try to get context length from compressor first, then hardcoded
+        ctx_len = 0
+        used_tokens = 0
+
+        if self.agent and hasattr(self.agent, 'context_compressor'):
+            compressor = self.agent.context_compressor
+            ctx_len = compressor.context_length
+            used_tokens = compressor.last_prompt_tokens
+
+        if not ctx_len:
+            # Fuzzy match model name
+            for key, length in MODEL_CONTEXTS.items():
+                if key in self.model or self.model in key:
+                    ctx_len = length
+                    break
+
+        if not ctx_len:
+            print(f"  (._.) Context tracking not available for model: {self.model}")
+            print(f"  Only local/qwen3.5-9b is supported right now.")
+            return
+
+        # Estimate used tokens from conversation history if compressor has no data
+        if not used_tokens and self.conversation_history:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            used_tokens = estimate_messages_tokens_rough(self.conversation_history)
+
+        remaining = max(0, ctx_len - used_tokens)
+        pct_used = (used_tokens / ctx_len * 100) if ctx_len else 0
+        pct_free = 100.0 - pct_used
+
+        # ASCII bar — 50 chars wide
+        bar_width = 50
+        filled = int(bar_width * pct_used / 100)
+        empty = bar_width - filled
+
+        # Color thresholds
+        if pct_used < 50:
+            color = "green"
+            status = "plenty of room"
+        elif pct_used < 75:
+            color = "yellow"
+            status = "getting warm"
+        elif pct_used < 90:
+            color = "#FF8C00"
+            status = "running low"
+        else:
+            color = "red"
+            status = "CRITICAL"
+
+        # Build the gauge
+        bar_filled = "\u2588" * filled
+        bar_empty = "\u2591" * empty
+
+        print()
+        print(f"  Context Window \u2014 {self.model}")
+        print(f"  {'\u2500' * 56}")
+        self.console.print(f"  [{color}]{bar_filled}[/][dim]{bar_empty}[/] {pct_used:.1f}%")
+        print()
+        print(f"  Used:      {used_tokens:>8,} tokens")
+        print(f"  Remaining: {remaining:>8,} tokens")
+        print(f"  Capacity:  {ctx_len:>8,} tokens")
+        print(f"  Status:    {status}")
+        print()
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
@@ -2312,6 +2390,68 @@ metadata:
         print(f"\nImported {imported} to {skills_dir}")
         if skipped:
             print(f"  ({skipped} already existed, skipped)")
+
+    def _handle_swarm_command(self, command: str):
+        """Handle /swarm <goal> — run a parallel agent swarm."""
+        parts = command.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            print("  Usage: /swarm <goal>")
+            print("  Example: /swarm refactor the auth module and add tests")
+            return
+
+        goal = parts[1].strip()
+
+        try:
+            from swarm.orchestrator import SwarmOrchestrator
+            from swarm.planner import TaskPlanner
+            from swarm.types import SwarmConfig
+        except ImportError:
+            self.console.print("[bold red]Swarm module not available.[/]")
+            return
+
+        self.console.print(f"[bold #DAA520]🐝 Swarm: decomposing goal...[/]")
+
+        try:
+            # Use planner to break goal into tasks
+            planner = TaskPlanner()
+            tasks = planner.decompose(goal)
+
+            if not tasks:
+                self.console.print("[yellow]Planner returned no tasks.[/]")
+                return
+
+            # Convert SwarmTask objects to dicts for add_plan()
+            plan = [
+                {"name": t.name, "prompt": t.prompt, "role": t.role,
+                 "deps": [d for d in t.deps], "model": t.model or None}
+                for t in tasks
+            ]
+
+            self.console.print(f"[dim]  → {len(plan)} tasks planned[/]")
+            for i, t in enumerate(plan, 1):
+                self.console.print(f"[dim]  {i}. {t['name']}[/]")
+
+            # Run swarm
+            config = SwarmConfig()
+            orch = SwarmOrchestrator(config)
+            orch.add_plan(plan)
+
+            self.console.print(f"[bold #DAA520]🐝 Swarm: executing {len(plan)} tasks...[/]")
+            summary = orch.run()
+
+            # Display results — summary shape: {"tasks": {state: count}, "total_tasks": N, ...}
+            task_counts = summary.get("tasks", {})
+            completed = task_counts.get("completed", 0)
+            failed = task_counts.get("failed", 0)
+            total = summary.get("total_tasks", len(plan))
+
+            if failed == 0:
+                self.console.print(f"[bold green]✅ Swarm complete: {completed}/{total} tasks succeeded[/]")
+            else:
+                self.console.print(f"[bold yellow]⚠️  Swarm: {completed}/{total} succeeded, {failed} failed[/]")
+
+        except Exception as e:
+            self.console.print(f"[bold red]Swarm error: {e}[/]")
 
     def _clarify_callback(self, question, choices):
         """
@@ -2574,10 +2714,10 @@ metadata:
                 bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
 
                 # Style or strip <think> blocks based on user preference
+                import re as _re
                 if self.show_thinking:
                     styled_response = _format_think_blocks(response)
                 else:
-                    import re as _re
                     # Strip closed think blocks
                     styled_response = _re.sub(r'<think>.*?</think>\s*', '', response, flags=_re.DOTALL)
                     # Strip unclosed think blocks (model ran out of tokens mid-think)
@@ -2585,6 +2725,17 @@ metadata:
                     # Strip orphaned </think> (opening tag in separate field)
                     styled_response = _re.sub(r'^.*?</think>\s*', '', styled_response, flags=_re.DOTALL)
                     styled_response = styled_response.strip()
+
+                # Always strip <tool_call> blocks from display — these are
+                # machine-readable tags that the adapter processes internally.
+                styled_response = _re.sub(
+                    r'<tool_call>.*?</tool_call>\s*', '', styled_response, flags=_re.DOTALL
+                )
+                # Strip truncated/unclosed tool_call tags too
+                styled_response = _re.sub(
+                    r'<tool_call>.*', '', styled_response, flags=_re.DOTALL
+                )
+                styled_response = styled_response.strip()
 
                 # Render box + response as a single _cprint call so
                 # nothing can interleave between the box borders.
