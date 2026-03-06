@@ -3093,22 +3093,8 @@ class HermesCLI:
         # Horizontal rules above and below the input (bronze, 1 line each).
         # Use a callable so the rule redraws at the current terminal width
         # after a resize (avoids the old 200-char overflow/garble).
-        def _rule_text():
-            try:
-                import shutil
-                w = shutil.get_terminal_size((80, 24)).columns
-            except Exception:
-                w = 80
-            return [('class:input-rule', '─' * w)]
-
-        input_rule_top = Window(
-            content=FormattedTextControl(_rule_text),
-            height=1,
-        )
-        input_rule_bot = Window(
-            content=FormattedTextControl(_rule_text),
-            height=1,
-        )
+        input_rule_top = Window(height=1, char='─', style='class:input-rule')
+        input_rule_bot = Window(height=1, char='─', style='class:input-rule')
 
         # Layout: interactive prompt widgets + ruled input at bottom.
         # The sudo, approval, and clarify widgets appear above the input when
