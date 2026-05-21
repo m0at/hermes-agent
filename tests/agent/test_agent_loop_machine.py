@@ -22,8 +22,10 @@ pytestmark = pytest.mark.skipif(not HAS_HERMES_RS, reason="hermes_rs not built")
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def drive_to_state(m, target_state, response_kind=ResponseKind.Text):
+def drive_to_state(m, target_state, response_kind=None):
     """Step through the state machine until we reach target_state."""
+    if response_kind is None:
+        response_kind = ResponseKind.Text
     m.begin_iteration()
     for _ in range(20):  # safety limit
         t = m.step(response_kind)
